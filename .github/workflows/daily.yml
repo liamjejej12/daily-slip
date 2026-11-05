@@ -1,0 +1,65 @@
+name: Daily Slip
+
+on:
+  schedule:
+    # GitHub schedules run in UTC. Both hours are listed so 11 AM / 3 PM Eastern works in
+    # summer and winter; once the day's slip is locked, the extra run costs 0 credits.
+    - cron: "0 15,16 * * *"     # morning scan (11 AM Eastern)
+    - cron: "0 19,20 * * *"     # retry if lines weren't posted yet (3 PM Eastern)
+    - cron: "*/30 0-6 * * *"    # grade results during evening games
+    - cron: "0 9 * * *"         # final grading pass
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: "scan (spends credits if today isn't locked) or grade (free)"
+        default: grade
+        type: choice
+        options: [grade, scan]
+
+permissions:
+  contents: write
+
+concurrency:
+  group: daily-slip
+  cancel-in-progress: false
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      TZ: America/New_York
+      ODDS_API_KEY: ${{ secrets.ODDS_API_KEY }}
+      SLIP_PASSWORD: ${{ secrets.SLIP_PASSWORD }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install
+        run: pip install --quiet requests python-dotenv flask cryptography
+
+      - name: Unlock data
+        run: python publish.py decrypt
+
+      - name: Scan or grade
+        run: |
+          MODE="${{ github.event.inputs.mode }}"
+          HOUR=$(date +%H)
+          if [ -z "$MODE" ]; then
+            if [ "$HOUR" -ge 10 ] && [ "$HOUR" -le 16 ]; then MODE=scan; else MODE=grade; fi
+          fi
+          python sports_app.py --$MODE
+
+      - name: Lock data and rebuild page
+        run: python publish.py encrypt
+
+      - name: Save
+        run: |
+          git config user.name "daily-slip-bot"
+          git config user.email "daily-slip-bot@users.noreply.github.com"
+          git add docs
+          git diff --cached --quiet || git commit -m "Update $(date '+%Y-%m-%d %H:%M %Z')"
+          git push

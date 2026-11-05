@@ -1,0 +1,10 @@
+# Never upload these: secrets and unencrypted data
+.env
+.phone_key
+today_best_pick.json
+pick_history.json
+model.json
+*.log
+instance/
+__pycache__/
+.DS_Store
