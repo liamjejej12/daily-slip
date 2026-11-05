@@ -23,6 +23,11 @@
   const toB64 = buf => btoa(String.fromCharCode(...new Uint8Array(buf)));
   let bundleMeta = null, aesKey = null, data = null, loadedAt = 0, resolveReady;
   const ready = new Promise(r => { resolveReady = r; });
+  // Cover the page until it's unlocked, so nothing (not even an empty layout) shows first
+  const cover = document.createElement('div');
+  cover.style.cssText = 'position:fixed;inset:0;z-index:99;background:#0a0f1d';
+  document.body.appendChild(cover);
+  ready.then(() => cover.remove());
 
   async function fetchBundle() {
     const r = await realFetch('data.enc?t=' + Date.now(), { cache: 'no-store' });
