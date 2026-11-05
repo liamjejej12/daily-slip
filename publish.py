@@ -64,7 +64,8 @@ def view(files):
     h = files.get("pick_history.json") or {"days": {}}
     days = [{**h["days"][k], "slip": sa.slip_result(h["days"][k]["picks"], h["days"][k].get("entry"))}
             for k in sorted(h["days"], reverse=True)]
-    return {"days": days, "summary": sa.history_summary(h), "model": files.get("model.json"), "areas": sa.areas_report(h)}
+    return {"days": days, "summary": sa.history_summary(h), "model": files.get("model.json"), "areas": sa.areas_report(h),
+            "suggestions": sa.suggestions_report(h)}
 
 
 def page_meta():

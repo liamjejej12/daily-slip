@@ -1354,6 +1354,131 @@ def fit_model(h):
     return model
 
 
+# ───────── How every suggestion did ─────────
+SCORE_STAKE = 10     # replayed at $10 per slip
+
+
+def entry_label(kind, n):
+    return f"{n}-pick {'Power' if kind == 'power' else 'Flex'}"
+
+
+def entry_return(legs, kind):
+    """What one slip paid, as a multiple of its stake. Voids and pushes drop out, as on PrizePicks."""
+    live = [p for p in legs if p.get("result") in ("hit", "miss")]
+    return payout_mult(kind, len(live), sum(p["result"] == "hit" for p in live))
+
+
+def payout_dist(probs, kind):
+    dist = [1.0]
+    for q in probs:
+        nxt = [0.0] * (len(dist) + 1)
+        for i, v in enumerate(dist):
+            nxt[i] += v * (1 - q)
+            nxt[i + 1] += v * q
+        dist = nxt
+    out = {}
+    for h, v in enumerate(dist):
+        m = payout_mult(kind, len(probs), h)
+        out[m] = out.get(m, 0) + v
+    return out
+
+
+def split_plans(picks, shrink):
+    """The split suggestions the Slip tab shows (same rules as the page): best of each shape, positive value only."""
+    picks = picks[:6]
+    m = len(picks)
+    if m < 4:
+        return []
+    cautious = {p["id"]: 0.5 + (p["final_p"] - 0.5) * shrink for p in picks}
+
+    def score(entries):
+        total = {0.0: 1.0}
+        for kind, legs in entries:
+            d = payout_dist([cautious[p["id"]] for p in legs], kind)
+            total = _combine(total, d)
+        k = len(entries)
+        ahead = sum(v for t, v in total.items() if t > k + 1e-9)
+        ev = sum(t * v for t, v in total.items()) / k - 1
+        return {"entries": entries, "ahead": ahead, "ev": ev,
+                "label": " + ".join(entry_label(kind, len(legs)) for kind, legs in entries)}
+
+    kinds_for = lambda n: ["power"] if n == 2 else ["power", "flex"] if n == 3 else ["flex"]
+    plans = []
+    for size in range(4, m + 1):
+        for mask in range(1, (1 << size) - 1):
+            if not mask & 1:
+                continue
+            a = [picks[i] for i in range(size) if mask >> i & 1]
+            b = [picks[i] for i in range(size) if not mask >> i & 1]
+            if len(a) < 2 or len(b) < 2:
+                continue
+            for ka in kinds_for(len(a)):
+                for kb in kinds_for(len(b)):
+                    plans.append(score([(ka, a), (kb, b)]))
+    if m == 6:
+        def pairings(rest):
+            if not rest:
+                return [[]]
+            first, others = rest[0], rest[1:]
+            return [[(first, o)] + tail for i, o in enumerate(others) for tail in pairings(others[:i] + others[i + 1:])]
+        for groups in pairings(picks):
+            plans.append(score([("power", list(g)) for g in groups]))
+    plans = sorted((pl for pl in plans if pl["ev"] >= 0), key=lambda pl: (-pl["ahead"], -pl["ev"]))
+    seen, out = set(), []
+    for pl in plans:
+        if pl["label"] not in seen:
+            seen.add(pl["label"])
+            out.append(pl)
+    return out[:3]
+
+
+def _combine(a, b):
+    out = {}
+    for x, px in a.items():
+        for y, py in b.items():
+            out[x + y] = out.get(x + y, 0) + px * py
+    return out
+
+
+def suggestions_report(h):
+    """Replay every slip the app suggested each finished day, at $10 each, played or not."""
+    shrink = entry_shrink()
+    rows = {}
+
+    def add(label, kind, mults):
+        r = rows.setdefault(label, {"label": label, "type": kind, "days": 0, "cashed": 0, "staked": 0.0, "returned": 0.0, "sat_out": 0})
+        r["days"] += 1
+        r["staked"] += SCORE_STAKE * len(mults)
+        r["returned"] += SCORE_STAKE * sum(mults)
+        r["cashed"] += sum(mults) > len(mults)
+
+    for dk in sorted(h["days"]):
+        day = h["days"][dk]
+        picks = [p for p in day["picks"] if p.get("final_p") is not None]
+        if len(picks) < 2 or any(not p.get("result") for p in picks):
+            continue
+        for n in range(2, min(6, len(picks)) + 1):
+            for kind in ("power", "flex"):
+                if (kind == "power" and n > MAX_POWER_LEGS) or (kind == "flex" and n < 3):
+                    continue
+                add(entry_label(kind, n), "entry", [entry_return(picks[:n], kind)])
+        for pl in split_plans(picks, shrink):
+            add("Split: " + pl["label"], "split", [entry_return(legs, kind) for kind, legs in pl["entries"]])
+        e = day.get("entry")
+        if e and e.get("kind") and e.get("play"):
+            add("Picker's daily suggestion", "suggested", [entry_return([p for p in day["picks"] if p["id"] in e["ids"]], e["kind"])])
+        elif e is not None:
+            rows.setdefault("Picker's daily suggestion", {"label": "Picker's daily suggestion", "type": "suggested", "days": 0,
+                                                          "cashed": 0, "staked": 0.0, "returned": 0.0, "sat_out": 0})["sat_out"] += 1
+    out = []
+    for r in rows.values():
+        r["pl"] = round(r["returned"] - r["staked"], 2)
+        r["roi"] = r["pl"] / r["staked"] if r["staked"] else None
+        out.append(r)
+    order = {"suggested": 0, "entry": 1, "split": 2}
+    return sorted(out, key=lambda r: (order[r["type"]], -r["pl"] if r["type"] == "split" else r["label"]))
+
+
 def history_summary(h):
     picks = [p for d in h["days"].values() for p in d["picks"]]
     count = lambda r, ps=picks: sum(p.get("result") == r for p in ps)
@@ -2065,7 +2190,8 @@ def api_history():
     for key in sorted(h["days"], reverse=True):
         day = h["days"][key]
         days.append({**day, "slip": slip_result(day["picks"], day.get("entry"))})
-    return jsonify({"days": days, "summary": history_summary(h), "model": fit_model(h), "areas": areas_report(h)})
+    return jsonify({"days": days, "summary": history_summary(h), "model": fit_model(h), "areas": areas_report(h),
+                    "suggestions": suggestions_report(h)})
 
 
 @app.get("/")
@@ -3231,6 +3357,26 @@ function renderMySlips() {
   return html + `<p class="footnote">Simulated money only, to mirror your real PrizePicks entries. Players who don't play drop out and the payout is recalculated, as on PrizePicks.</p>`;
 }
 
+function suggestionsPanel(rows) {
+  if (!rows || !rows.length) return `<div class="card" style="padding:14px;margin-bottom:8px"><b>How every suggestion did</b>
+    <p class="faint" style="font-size:12.5px;margin:4px 0 0">Fills in after the first full day of results.</p></div>`;
+  const money2 = v => (v >= 0 ? '+' : '-') + money(Math.abs(v));
+  const best = rows.filter(r => r.days >= 1).reduce((b, r) => (!b || r.pl > b.pl ? r : b), null);
+  const line = r => `<tr>
+      <td>${r.type === 'split' ? esc(r.label.replace('Split: ', '')) : `<b>${esc(r.label)}</b>`}${best && r === best && r.pl > 0 ? ' <span class="res hit">BEST</span>' : ''}</td>
+      <td class="r">${r.cashed} of ${r.days}${r.sat_out ? `<div class="faint" style="font-size:11px">${r.sat_out} sat out</div>` : ''}</td>
+      <td class="r ${r.pl > 0 ? 'pos' : r.pl < 0 ? 'neg' : ''}"><b>${money2(r.pl)}</b></td>
+      <td class="r faint">${r.roi == null ? '—' : (r.roi >= 0 ? '+' : '') + Math.round(r.roi * 100) + '%'}</td></tr>`;
+  const head = '<thead><tr><th>Slip</th><th class="r">Cashed</th><th class="r">P/L</th><th class="r">Return</th></tr></thead>';
+  const singles = rows.filter(r => r.type !== 'split'), splits = rows.filter(r => r.type === 'split');
+  return `<details class="card fold learn" open><summary><div><b>How every suggestion did</b>
+      <div class="faint" style="font-size:12px">Every slip it suggested, replayed at $10 each, played or not</div></div><span class="chev">›</span></summary>
+    <div class="fold-body" style="padding:10px 14px 14px">
+      <table>${head}<tbody>${singles.map(line).join('')}</tbody></table>
+      ${splits.length ? `<div class="section-label" style="margin:14px 0 4px">Split suggestions ($10 per slip in the split)</div><table>${head}<tbody>${splits.map(line).join('')}</tbody></table>` : ''}
+      <p class="faint" style="font-size:12px;margin:10px 0 0">Entry sizes use the day's top picks in order, like the Slip tab. A few days of results is mostly luck; look for patterns over weeks.</p>
+    </div></details>`;
+}
 function areasPanel(areas) {
   if (!areas || !areas.length) return '';
   const rows = areas.filter(a => a.n >= 3).slice(0, 12).map(a => `<tr>
@@ -3267,7 +3413,7 @@ function renderRecord() {
       <div class="card"><dt>Hit rate</dt><dd>${s.hit_rate == null ? '—' : pct(s.hit_rate)}</dd><small>${esc(leagues) || 'no graded picks yet'}</small></div>
       <div class="card"><dt>Slips won</dt><dd>${s.slips_cashed} of ${s.slips}</dd><small>${s.sat_out ? `${s.sat_out} sat out` : 'suggested entries'}</small></div>
       <div class="card"><dt>Slip P/L</dt><dd class="${plCls(s.slip_pl)}">${s.slips ? plStr(s.slip_pl) : '—'}</dd><small>at $${s.stake} each</small></div>
-    </dl>` + learningPanel(h.model) + areasPanel(h.areas) + `<div class="section-label">Past slips</div>`;
+    </dl>` + suggestionsPanel(h.suggestions) + learningPanel(h.model) + areasPanel(h.areas) + `<div class="section-label">Past slips</div>`;
   if (!h.days.length) html += '<div class="card empty"><strong>No slips yet</strong>Your first daily slip will show up here.</div>';
   html += h.days.map((d, i) => {
     const hits = d.picks.filter(p => p.result === 'hit').length;

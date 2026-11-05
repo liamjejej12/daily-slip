@@ -1120,6 +1120,26 @@ function renderMySlips() {
   return html + `<p class="footnote">Simulated money only, to mirror your real PrizePicks entries. Players who don't play drop out and the payout is recalculated, as on PrizePicks.</p>`;
 }
 
+function suggestionsPanel(rows) {
+  if (!rows || !rows.length) return `<div class="card" style="padding:14px;margin-bottom:8px"><b>How every suggestion did</b>
+    <p class="faint" style="font-size:12.5px;margin:4px 0 0">Fills in after the first full day of results.</p></div>`;
+  const money2 = v => (v >= 0 ? '+' : '-') + money(Math.abs(v));
+  const best = rows.filter(r => r.days >= 1).reduce((b, r) => (!b || r.pl > b.pl ? r : b), null);
+  const line = r => `<tr>
+      <td>${r.type === 'split' ? esc(r.label.replace('Split: ', '')) : `<b>${esc(r.label)}</b>`}${best && r === best && r.pl > 0 ? ' <span class="res hit">BEST</span>' : ''}</td>
+      <td class="r">${r.cashed} of ${r.days}${r.sat_out ? `<div class="faint" style="font-size:11px">${r.sat_out} sat out</div>` : ''}</td>
+      <td class="r ${r.pl > 0 ? 'pos' : r.pl < 0 ? 'neg' : ''}"><b>${money2(r.pl)}</b></td>
+      <td class="r faint">${r.roi == null ? '—' : (r.roi >= 0 ? '+' : '') + Math.round(r.roi * 100) + '%'}</td></tr>`;
+  const head = '<thead><tr><th>Slip</th><th class="r">Cashed</th><th class="r">P/L</th><th class="r">Return</th></tr></thead>';
+  const singles = rows.filter(r => r.type !== 'split'), splits = rows.filter(r => r.type === 'split');
+  return `<details class="card fold learn" open><summary><div><b>How every suggestion did</b>
+      <div class="faint" style="font-size:12px">Every slip it suggested, replayed at $10 each, played or not</div></div><span class="chev">›</span></summary>
+    <div class="fold-body" style="padding:10px 14px 14px">
+      <table>${head}<tbody>${singles.map(line).join('')}</tbody></table>
+      ${splits.length ? `<div class="section-label" style="margin:14px 0 4px">Split suggestions ($10 per slip in the split)</div><table>${head}<tbody>${splits.map(line).join('')}</tbody></table>` : ''}
+      <p class="faint" style="font-size:12px;margin:10px 0 0">Entry sizes use the day's top picks in order, like the Slip tab. A few days of results is mostly luck; look for patterns over weeks.</p>
+    </div></details>`;
+}
 function areasPanel(areas) {
   if (!areas || !areas.length) return '';
   const rows = areas.filter(a => a.n >= 3).slice(0, 12).map(a => `<tr>
@@ -1156,7 +1176,7 @@ function renderRecord() {
       <div class="card"><dt>Hit rate</dt><dd>${s.hit_rate == null ? '—' : pct(s.hit_rate)}</dd><small>${esc(leagues) || 'no graded picks yet'}</small></div>
       <div class="card"><dt>Slips won</dt><dd>${s.slips_cashed} of ${s.slips}</dd><small>${s.sat_out ? `${s.sat_out} sat out` : 'suggested entries'}</small></div>
       <div class="card"><dt>Slip P/L</dt><dd class="${plCls(s.slip_pl)}">${s.slips ? plStr(s.slip_pl) : '—'}</dd><small>at $${s.stake} each</small></div>
-    </dl>` + learningPanel(h.model) + areasPanel(h.areas) + `<div class="section-label">Past slips</div>`;
+    </dl>` + suggestionsPanel(h.suggestions) + learningPanel(h.model) + areasPanel(h.areas) + `<div class="section-label">Past slips</div>`;
   if (!h.days.length) html += '<div class="card empty"><strong>No slips yet</strong>Your first daily slip will show up here.</div>';
   html += h.days.map((d, i) => {
     const hits = d.picks.filter(p => p.result === 'hit').length;
