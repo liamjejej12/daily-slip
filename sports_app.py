@@ -1530,7 +1530,7 @@ def api_history():
 @app.get("/")
 def index():
     config = {
-        "budget": DAILY_CREDIT_BUDGET, "min_ev": MIN_ENTRY_EV,
+        "budget": DAILY_CREDIT_BUDGET, "min_ev": MIN_ENTRY_EV, "shrink": ENTRY_SHRINK, "max_power_legs": MAX_POWER_LEGS,
         "leagues": [{"key": s["key"], "label": s["label"], "group": s["group"], "props": list(s["props"])}
                     for s in SPORT_BY_KEY.values()],
     }
@@ -1576,296 +1576,288 @@ PAGE = r'''<!doctype html>
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>Daily Slip</title>
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-title" content="Daily Slip">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <meta name="theme-color" content="#0a0f1d">
 <link rel="preconnect" href="https://fonts.googleapis.com">
-<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
 <style>
   :root {
-    --bg: #0a0f1d;
-    --surface: #0f1627;
-    --surface-2: #141c30;
-    --border: rgba(148, 163, 184, 0.12);
-    --border-strong: rgba(148, 163, 184, 0.22);
-    --text: #e6e9ef;
-    --muted: #8b94a7;
-    --faint: #5c6578;
-    --accent: #8fb3ff;
-    --pos: #3ecf8e;
-    --neg: #f07178;
-    --pos-bg: rgba(62, 207, 142, 0.10);
-    --neg-bg: rgba(240, 113, 120, 0.10);
-    --radius: 12px;
+    --bg: #0a0f1d; --surface: #0f1627; --surface-2: #141c30; --surface-3: #1a2440;
+    --border: rgba(148, 163, 184, 0.12); --border-strong: rgba(148, 163, 184, 0.22);
+    --text: #e6e9ef; --muted: #8b94a7; --faint: #5c6578;
+    --accent: #8fb3ff; --pos: #3ecf8e; --neg: #f07178; --warn: #e5c07b;
+    --pos-bg: rgba(62, 207, 142, 0.12); --neg-bg: rgba(240, 113, 120, 0.12);
+    --radius: 14px; --nav-h: 64px;
   }
-  * { box-sizing: border-box; }
+  * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
   html { color-scheme: dark; }
-  body {
-    margin: 0; background: var(--bg); color: var(--text);
-    font: 14px/1.5 Inter, system-ui, -apple-system, sans-serif;
-    font-feature-settings: "tnum" 1, "cv11" 1; -webkit-font-smoothing: antialiased;
-  }
+  body { margin: 0; background: var(--bg); color: var(--text); font: 14px/1.5 Inter, system-ui, -apple-system, sans-serif;
+         font-feature-settings: "tnum" 1, "cv11" 1; -webkit-font-smoothing: antialiased; }
+  body::before { content: ""; position: fixed; inset: 0 0 auto 0; height: 420px; pointer-events: none; z-index: 0;
+    background: radial-gradient(600px 260px at 85% -60px, rgba(143, 179, 255, 0.16), transparent 70%),
+                radial-gradient(500px 220px at 0% -40px, rgba(62, 207, 142, 0.08), transparent 70%); }
   button, input, select { font: inherit; color: inherit; }
   button { cursor: pointer; }
-  .num { font-variant-numeric: tabular-nums; }
+  .pos { color: var(--pos); } .neg { color: var(--neg); } .muted { color: var(--muted); } .faint { color: var(--faint); }
 
-  /* Layout */
-  .topbar { border-bottom: 1px solid var(--border); }
-  .topbar-inner { max-width: 1440px; margin: 0 auto; padding: 14px 24px; display: flex; align-items: center; justify-content: space-between; gap: 16px; flex-wrap: wrap; }
-  .brand { display: flex; align-items: baseline; gap: 10px; }
-  .brand h1 { font-size: 16px; font-weight: 600; margin: 0; letter-spacing: -0.01em; }
-  .brand span { color: var(--faint); font-size: 13px; }
-  .status { color: var(--muted); font-size: 12.5px; display: flex; gap: 14px; flex-wrap: wrap; }
-  .status b { color: var(--text); font-weight: 500; }
-  .layout { max-width: 1440px; margin: 0 auto; padding: 24px; display: grid; gap: 24px; grid-template-columns: 180px minmax(0, 1fr) 320px; align-items: start; }
-  @media (max-width: 1180px) { .layout { grid-template-columns: 160px minmax(0, 1fr); } .slip { grid-column: 2; } }
-  @media (max-width: 760px) { .layout { grid-template-columns: minmax(0, 1fr); padding: 16px; gap: 16px; } .slip { grid-column: auto; } .topbar-inner { padding: 12px 16px; } }
-
-  /* Sidebar */
-  .side { position: sticky; top: 24px; }
-  .side h3, .section-label { font-size: 11px; font-weight: 600; color: var(--faint); text-transform: uppercase; letter-spacing: 0.08em; margin: 0 0 8px; }
-  .filters { display: flex; flex-direction: column; gap: 2px; }
-  .filter { display: flex; justify-content: space-between; align-items: center; gap: 10px; padding: 7px 10px; border-radius: 8px; border: 0; background: none; color: var(--muted); text-align: left; }
-  .filter:hover { background: var(--surface); color: var(--text); }
-  .filter.active { background: var(--surface-2); color: var(--text); }
-  .filter .count { color: var(--faint); font-size: 12px; }
-  .side-note { margin-top: 20px; color: var(--faint); font-size: 12px; }
-  .side-note a { color: var(--muted); }
-  @media (max-width: 760px) { .side { position: static; } .filters { flex-direction: row; overflow-x: auto; } .filter { white-space: nowrap; } .side-note { display: none; } }
-
-  /* Sections */
-  .section-head { display: flex; justify-content: space-between; align-items: flex-end; gap: 12px; margin-bottom: 12px; flex-wrap: wrap; }
-  .section-head h2 { font-size: 20px; font-weight: 600; margin: 0; letter-spacing: -0.015em; }
-  .section-head p { margin: 2px 0 0; color: var(--muted); font-size: 13px; }
-  .chip { display: inline-flex; align-items: center; gap: 6px; padding: 3px 9px; border: 1px solid var(--border); border-radius: 999px; color: var(--muted); font-size: 12px; }
-  .chip.ok { color: var(--pos); border-color: rgba(62, 207, 142, 0.3); }
-  .chip.warn { color: #e5c07b; border-color: rgba(229, 192, 123, 0.3); }
-  .panel { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); }
-
-  /* Picks */
-  .picks { display: flex; flex-direction: column; gap: 8px; }
-  .pick { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 14px 16px; cursor: pointer; transition: border-color .12s, background .12s; }
-  .pick:hover { border-color: var(--border-strong); }
-  .pick.is-selected { border-color: rgba(143, 179, 255, 0.45); background: var(--surface-2); }
-  .pick:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
-  .pick-top { display: grid; grid-template-columns: 22px minmax(0, 1fr) auto auto 20px; gap: 14px; align-items: center; }
-  .rank { color: var(--faint); font-size: 13px; }
-  .who .name { font-weight: 600; font-size: 15px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-  .who .meta { color: var(--muted); font-size: 12.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-  .line { text-align: right; }
-  .line .prop { color: var(--muted); font-size: 12px; }
-  .line .val { font-size: 18px; font-weight: 600; }
-  .side-badge { font-size: 12px; font-weight: 600; letter-spacing: 0.04em; padding: 4px 10px; border-radius: 6px; min-width: 56px; text-align: center; }
-  .side-badge.more { color: var(--pos); background: var(--pos-bg); }
-  .side-badge.less { color: var(--neg); background: var(--neg-bg); }
-  .tick { width: 18px; height: 18px; border-radius: 5px; border: 1px solid var(--border-strong); display: grid; place-items: center; font-size: 12px; color: var(--bg); }
-  .is-selected .tick { background: var(--accent); border-color: var(--accent); }
-  .pick-bottom { display: grid; grid-template-columns: minmax(0, 1fr) 150px; gap: 16px; align-items: end; margin-top: 12px; padding-left: 36px; }
-  .stats { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 8px; margin: 0; }
-  .stats dt { color: var(--faint); font-size: 11px; }
-  .stats dd { margin: 0; font-size: 13px; font-weight: 500; }
-  .why { color: var(--faint); font-size: 12px; margin: 8px 0 0 36px; }
-  @media (max-width: 760px) {
-    .pick-top { grid-template-columns: minmax(0, 1fr) auto auto; }
-    .pick-top .rank, .pick-top .tick { display: none; }
-    .pick-bottom { grid-template-columns: minmax(0, 1fr); padding-left: 0; }
-    .stats { grid-template-columns: repeat(3, minmax(0, 1fr)); }
-    .why { margin-left: 0; }
+  /* Header & navigation */
+  header.top { position: sticky; top: 0; z-index: 20; background: rgba(10, 15, 29, 0.82); backdrop-filter: blur(14px);
+    -webkit-backdrop-filter: blur(14px); border-bottom: 1px solid var(--border); padding-top: env(safe-area-inset-top); }
+  .top-inner { max-width: 880px; margin: 0 auto; padding: 12px 18px; display: flex; align-items: center; gap: 14px; }
+  .brand { display: flex; align-items: center; gap: 10px; min-width: 0; }
+  .brand svg { flex: none; border-radius: 9px; }
+  .brand h1 { margin: 0; font-size: 16px; font-weight: 700; letter-spacing: -0.01em; }
+  .brand .date { color: var(--faint); font-size: 12px; white-space: nowrap; }
+  .top-right { margin-left: auto; display: flex; align-items: center; gap: 10px; }
+  .status-pill { color: var(--muted); font-size: 12px; white-space: nowrap; }
+  .status-pill b { color: var(--text); font-weight: 600; }
+  nav.tabs { display: flex; gap: 2px; background: var(--surface); border: 1px solid var(--border); border-radius: 10px; padding: 3px; }
+  nav.tabs button { border: 0; background: none; color: var(--muted); padding: 6px 14px; border-radius: 8px; font-weight: 500; font-size: 13px;
+    display: flex; align-items: center; gap: 6px; }
+  nav.tabs button.on { background: var(--surface-3); color: var(--text); }
+  nav.tabs svg { width: 16px; height: 16px; }
+  .badge { min-width: 18px; height: 18px; padding: 0 5px; border-radius: 9px; background: var(--accent); color: var(--bg);
+    font-size: 11px; font-weight: 700; display: inline-grid; place-items: center; }
+  .badge[hidden] { display: none; }
+  .icon-btn { border: 1px solid var(--border-strong); background: var(--surface); border-radius: 9px; padding: 6px 10px; font-size: 12.5px; color: var(--muted); }
+  @media (max-width: 720px) {
+    /* a blurred header would trap the fixed tab bar inside it, so keep it solid on phones */
+    header.top { backdrop-filter: none; -webkit-backdrop-filter: none; background: rgba(10, 15, 29, 0.96); }
+    nav.tabs { position: fixed; left: 0; right: 0; bottom: 0; z-index: 30; border-radius: 0; border: 0; border-top: 1px solid var(--border);
+      background: rgba(12, 18, 34, 0.92); backdrop-filter: blur(16px); -webkit-backdrop-filter: blur(16px);
+      padding: 6px 8px calc(6px + env(safe-area-inset-bottom)); justify-content: space-around; }
+    nav.tabs button { flex-direction: column; gap: 2px; font-size: 10.5px; padding: 6px 4px; flex: 1; position: relative; }
+    nav.tabs button.on { background: none; color: var(--accent); }
+    nav.tabs svg { width: 22px; height: 22px; }
+    nav.tabs .badge { position: absolute; top: 2px; left: calc(50% + 6px); }
+    .status-pill { display: none; }
+    main { padding-bottom: calc(var(--nav-h) + env(safe-area-inset-bottom) + 20px) !important; }
   }
-  .pos { color: var(--pos); } .neg { color: var(--neg); }
+  main { position: relative; z-index: 1; max-width: 880px; margin: 0 auto; padding: 20px 18px 40px; }
+  .view[hidden] { display: none; }
 
-  .empty { padding: 28px; text-align: center; color: var(--muted); }
-  .empty strong { display: block; color: var(--text); font-weight: 600; margin-bottom: 4px; }
-  .btn { border: 1px solid var(--border-strong); background: var(--surface-2); border-radius: 8px; padding: 8px 14px; font-weight: 500; }
+  /* Shared pieces */
+  .card { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); }
+  .h2 { font-size: 20px; font-weight: 700; margin: 0 0 4px; letter-spacing: -0.015em; }
+  .sub { color: var(--muted); font-size: 13px; margin: 0 0 14px; }
+  .section-label { font-size: 11px; font-weight: 600; color: var(--faint); text-transform: uppercase; letter-spacing: 0.08em; margin: 22px 0 8px; }
+  .chip { display: inline-flex; align-items: center; gap: 6px; padding: 4px 11px; border: 1px solid var(--border-strong); border-radius: 999px;
+    color: var(--muted); font-size: 12.5px; background: none; }
+  .chip.on { color: var(--bg); background: var(--text); border-color: var(--text); }
+  .chips { display: flex; gap: 6px; overflow-x: auto; padding-bottom: 2px; scrollbar-width: none; }
+  .chips::-webkit-scrollbar { display: none; }
+  .side { font-size: 11.5px; font-weight: 700; letter-spacing: 0.05em; padding: 4px 9px; border-radius: 7px; white-space: nowrap; }
+  .side.more { color: var(--pos); background: var(--pos-bg); }
+  .side.less { color: var(--neg); background: var(--neg-bg); }
+  .btn { border: 1px solid var(--border-strong); background: var(--surface-2); border-radius: 10px; padding: 9px 15px; font-weight: 600; font-size: 13.5px; }
   .btn:hover { border-color: var(--accent); }
-  .btn-primary { background: var(--accent); border-color: var(--accent); color: #0a0f1d; font-weight: 600; }
-  .btn-primary:hover { filter: brightness(1.08); }
+  .btn-primary { background: var(--accent); border-color: var(--accent); color: var(--bg); }
+  .btn-primary:hover { filter: brightness(1.07); }
   .btn:disabled { opacity: .5; cursor: default; }
-  .spinner { width: 14px; height: 14px; border: 2px solid var(--border-strong); border-top-color: var(--accent); border-radius: 50%; display: inline-block; animation: spin .8s linear infinite; vertical-align: -2px; }
+  .link { background: none; border: 0; padding: 0; color: var(--muted); font-size: 12.5px; text-decoration: underline; text-underline-offset: 3px; }
+  .spinner { width: 14px; height: 14px; border: 2px solid var(--border-strong); border-top-color: var(--accent); border-radius: 50%;
+    display: inline-block; animation: spin .8s linear infinite; vertical-align: -2px; }
   @keyframes spin { to { transform: rotate(360deg); } }
-  .footnote { color: var(--faint); font-size: 12px; margin-top: 12px; }
+  .empty { padding: 30px 20px; text-align: center; color: var(--muted); }
+  .empty strong { display: block; color: var(--text); font-size: 15px; margin-bottom: 4px; }
+  .notice { padding: 11px 14px; margin-bottom: 12px; font-size: 13px; border-color: rgba(143, 179, 255, 0.35); }
+  .footnote { color: var(--faint); font-size: 12px; margin-top: 14px; }
+  .res { font-size: 11px; font-weight: 700; letter-spacing: 0.05em; padding: 3px 8px; border-radius: 6px; white-space: nowrap; }
+  .res.hit { color: var(--pos); background: var(--pos-bg); } .res.miss { color: var(--neg); background: var(--neg-bg); }
+  .res.push, .res.void, .res.pending { color: var(--muted); background: rgba(148, 163, 184, 0.12); }
 
-  /* Research */
-  details.research { margin-top: 32px; }
-  details.research > summary { list-style: none; cursor: pointer; display: flex; align-items: center; gap: 8px; color: var(--muted); font-weight: 500; }
-  details.research > summary::-webkit-details-marker { display: none; }
-  details.research > summary::before { content: "›"; display: inline-block; transition: transform .15s; font-size: 16px; }
-  details.research[open] > summary::before { transform: rotate(90deg); }
-  .form { display: grid; grid-template-columns: 150px minmax(0, 1fr) 170px 100px auto; gap: 10px; align-items: end; padding: 14px; margin-top: 12px; }
-  @media (max-width: 1000px) { .form { grid-template-columns: 1fr 1fr; } }
-  .field label { display: block; color: var(--faint); font-size: 11px; margin-bottom: 4px; }
-  .field input, .field select { width: 100%; background: var(--bg); border: 1px solid var(--border-strong); border-radius: 8px; padding: 8px 10px; }
-  .field input:focus, .field select:focus { outline: none; border-color: var(--accent); }
-  .msg { color: var(--neg); font-size: 13px; margin-top: 8px; }
-  .report { padding: 16px; margin-top: 10px; }
-  .report-head { display: flex; justify-content: space-between; gap: 12px; flex-wrap: wrap; margin-bottom: 14px; }
-  .report-head .name { font-size: 17px; font-weight: 600; }
-  .report-grid { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 10px; margin-bottom: 14px; }
-  @media (max-width: 760px) { .report-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
-  .stat-box { border: 1px solid var(--border); border-radius: 8px; padding: 8px 10px; }
-  .stat-box dt { color: var(--faint); font-size: 11px; }
-  .stat-box dd { margin: 2px 0 0; font-weight: 600; }
-  .stat-box small { color: var(--muted); font-weight: 400; font-size: 11.5px; display: block; }
-  .reasons { margin: 12px 0 0; padding-left: 18px; color: var(--muted); font-size: 13px; }
-  .actions { display: flex; gap: 8px; margin-top: 14px; flex-wrap: wrap; }
+  /* Hero: today's best play */
+  .hero { position: relative; padding: 18px; border-radius: 18px; overflow: hidden; margin-bottom: 18px;
+    background: linear-gradient(160deg, #17213a, #0f1627 60%); border: 1px solid transparent;
+    background-clip: padding-box; }
+  .hero::before { content: ""; position: absolute; inset: 0; border-radius: 18px; padding: 1px; pointer-events: none;
+    background: linear-gradient(135deg, rgba(143, 179, 255, 0.7), rgba(62, 207, 142, 0.6) 55%, rgba(143, 179, 255, 0.1));
+    -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0); -webkit-mask-composite: xor; mask-composite: exclude; }
+  .hero::after { content: ""; position: absolute; width: 260px; height: 260px; right: -80px; top: -120px; pointer-events: none;
+    background: radial-gradient(circle, rgba(62, 207, 142, 0.25), transparent 65%); }
+  .hero .eyebrow { font-size: 11px; font-weight: 700; letter-spacing: 0.14em; text-transform: uppercase; color: var(--accent); }
+  .hero .title { font-size: 28px; font-weight: 800; letter-spacing: -0.02em; margin: 4px 0 2px; }
+  .hero .title small { font-size: 15px; font-weight: 600; color: var(--muted); margin-left: 6px; }
+  .hero-stats { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; margin: 14px 0 16px; position: relative; z-index: 1; }
+  .hero-stats div { background: rgba(10, 15, 29, 0.45); border: 1px solid var(--border); border-radius: 12px; padding: 10px 12px; }
+  .hero-stats dt { color: var(--faint); font-size: 11px; }
+  .hero-stats dd { margin: 2px 0 0; font-size: 19px; font-weight: 700; }
+  .hero .actions { display: flex; gap: 8px; flex-wrap: wrap; position: relative; z-index: 1; }
 
-  /* Tabs, results, record */
-  .tabs { display: flex; gap: 2px; background: var(--surface); border: 1px solid var(--border); border-radius: 8px; padding: 3px; }
-  .tabs button { border: 0; background: none; color: var(--muted); padding: 5px 14px; border-radius: 6px; font-weight: 500; font-size: 13px; }
-  .tabs button.on { background: var(--surface-2); color: var(--text); }
-  .res { font-size: 11px; font-weight: 600; letter-spacing: 0.04em; padding: 3px 8px; border-radius: 6px; white-space: nowrap; }
-  .res.hit { color: var(--pos); background: var(--pos-bg); }
-  .res.miss { color: var(--neg); background: var(--neg-bg); }
-  .res.push, .res.void, .res.pending { color: var(--muted); background: rgba(148, 163, 184, 0.10); }
-  .summary { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px; margin: 0 0 20px; }
-  @media (max-width: 760px) { .summary { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
-  .summary .panel { padding: 14px 16px; }
-  .summary dt { color: var(--faint); font-size: 11px; text-transform: uppercase; letter-spacing: 0.06em; }
-  .summary dd { margin: 4px 0 0; font-size: 22px; font-weight: 600; }
-  .summary small { display: block; color: var(--muted); font-size: 12px; font-weight: 400; margin-top: 2px; }
-  .day { margin-bottom: 14px; overflow: hidden; }
-  .day-head { display: flex; justify-content: space-between; align-items: baseline; gap: 12px; padding: 12px 16px; border-bottom: 1px solid var(--border); flex-wrap: wrap; }
-  .day-head h3 { margin: 0; font-size: 14px; font-weight: 600; }
-  .day-head span { color: var(--muted); font-size: 12.5px; }
-  table.results { width: 100%; border-collapse: collapse; font-size: 13px; }
-  table.results th { text-align: left; color: var(--faint); font-weight: 500; font-size: 11px; padding: 8px 16px; }
-  table.results td { padding: 9px 16px; border-top: 1px solid var(--border); }
-  table.results .r { text-align: right; }
-  @media (max-width: 760px) { table.results .hide-sm { display: none; } table.results th, table.results td { padding-left: 10px; padding-right: 10px; } }
+  /* Pick rows */
+  .picks { display: flex; flex-direction: column; gap: 8px; }
+  .pick { padding: 0; overflow: hidden; transition: border-color .12s; }
+  .pick.in-slip { border-color: rgba(143, 179, 255, 0.45); }
+  .pick-row { display: grid; grid-template-columns: minmax(0, 1fr) auto auto 34px; gap: 12px; align-items: center; padding: 13px 14px; cursor: pointer; }
+  .pick-row .name { font-weight: 600; font-size: 15px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .pick-row .meta { color: var(--muted); font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .pick-row .line { text-align: right; line-height: 1.2; }
+  .pick-row .line .p { color: var(--muted); font-size: 11.5px; }
+  .pick-row .line .v { font-size: 17px; font-weight: 700; }
+  .pick-row .est { font-size: 11px; color: var(--faint); text-align: center; margin-top: 3px; }
+  .add { width: 30px; height: 30px; border-radius: 50%; border: 1.5px solid var(--border-strong); background: none; display: grid; place-items: center;
+    color: var(--muted); font-size: 17px; line-height: 1; padding: 0; }
+  .in-slip .add { background: var(--accent); border-color: var(--accent); color: var(--bg); }
+  .pick-live { padding: 0 14px 12px; }
+  .details { border-top: 1px solid var(--border); padding: 12px 14px 14px; display: none; }
+  .open .details { display: block; }
+  .stats { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 8px; margin: 0 0 10px; }
+  .stats dt { color: var(--faint); font-size: 11px; }
+  .stats dd { margin: 0; font-size: 13px; font-weight: 600; }
+  .why { color: var(--muted); font-size: 12.5px; margin: 8px 0 0; }
+  @media (max-width: 520px) { .stats { grid-template-columns: repeat(3, minmax(0, 1fr)); } .pick-row { gap: 10px; padding: 12px; } }
 
-  /* Live tracking */
-  .live { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; gap: 14px; align-items: center; margin: 12px 0 0 36px; padding: 9px 12px; border: 1px solid var(--border); border-radius: 8px; background: var(--bg); font-size: 12.5px; }
-  .live .clock { color: var(--muted); white-space: nowrap; display: flex; align-items: center; gap: 7px; }
+  /* Live strip */
+  .live { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; gap: 12px; align-items: center; padding: 8px 10px;
+    border: 1px solid var(--border); border-radius: 10px; background: var(--bg); font-size: 12px; }
+  .live .clock { color: var(--muted); white-space: nowrap; display: flex; align-items: center; gap: 6px; }
   .live .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--neg); animation: pulse 1.6s ease-in-out infinite; }
   .live.final .dot { display: none; }
   @keyframes pulse { 50% { opacity: .3; } }
-  .live .bar { position: relative; height: 6px; border-radius: 3px; background: var(--surface-2); }
-  .live .bar span { position: absolute; left: 0; top: 0; bottom: 0; border-radius: 3px; background: var(--accent); }
+  .live .bar { position: relative; height: 6px; border-radius: 3px; background: var(--surface-3); }
+  .live .bar span { position: absolute; left: 0; top: 0; bottom: 0; border-radius: 3px; }
   .live .bar i { position: absolute; top: -4px; bottom: -4px; width: 2px; background: var(--muted); border-radius: 1px; }
-  .live .now { white-space: nowrap; }
-  .live .now b { font-size: 14px; font-weight: 600; }
-  .live .now small { color: var(--muted); margin-left: 6px; }
-  @media (max-width: 760px) { .live { margin-left: 0; grid-template-columns: minmax(0, 1fr) auto; } .live .bar { grid-column: 1 / -1; grid-row: 2; } }
-  .live-chip { font-size: 11px; font-weight: 600; color: var(--neg); white-space: nowrap; }
+  .live .now { white-space: nowrap; } .live .now b { font-size: 13.5px; } .live .now small { color: var(--muted); margin-left: 5px; }
+  @media (max-width: 520px) { .live { grid-template-columns: minmax(0, 1fr) auto; } .live .bar { grid-column: 1 / -1; grid-row: 2; } }
 
-  /* Learning panel */
-  .learn { padding: 16px; margin-bottom: 20px; }
-  .learn h3 { margin: 0 0 4px; font-size: 14px; font-weight: 600; }
-  .learn p { margin: 0; color: var(--muted); font-size: 13px; }
-  .progress { height: 6px; border-radius: 3px; background: var(--surface-2); margin: 12px 0 6px; overflow: hidden; }
-  .progress span { display: block; height: 100%; background: var(--accent); border-radius: 3px; }
-  .learn-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 20px; margin-top: 14px; }
-  @media (max-width: 760px) { .learn-grid { grid-template-columns: minmax(0, 1fr); } }
+  /* Line tools */
+  .line-tools { margin-top: 10px; font-size: 12.5px; }
+  .line-form { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin-top: 6px; }
+  .line-form input { width: 90px; background: var(--bg); border: 1px solid var(--border-strong); border-radius: 9px; padding: 7px 9px; }
+  .line-form .btn { padding: 7px 12px; font-size: 12.5px; }
+
+  /* Slip view */
+  .options { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 10px; padding-top: 8px; }
+  .option { text-align: left; padding: 12px; border-radius: 14px; border: 1px solid var(--border); background: var(--surface); position: relative; }
+  .option.on { border-color: var(--accent); background: var(--surface-2); box-shadow: 0 0 0 1px var(--accent) inset; }
+  .option .lbl { font-weight: 700; font-size: 14px; }
+  .option .best { position: absolute; top: -8px; right: 10px; background: linear-gradient(90deg, var(--accent), var(--pos)); color: var(--bg);
+    font-size: 10px; font-weight: 800; letter-spacing: 0.06em; padding: 2px 7px; border-radius: 6px; }
+  .option dl { margin: 8px 0 0; display: grid; gap: 3px; font-size: 12px; }
+  .option dl div { display: flex; justify-content: space-between; gap: 8px; }
+  .option dt { color: var(--faint); } .option dd { margin: 0; font-weight: 600; }
+  .slip-grid { display: grid; grid-template-columns: minmax(0, 1fr) 300px; gap: 16px; align-items: start; }
+  @media (max-width: 720px) { .slip-grid { grid-template-columns: minmax(0, 1fr); } }
+  .legs { display: flex; flex-direction: column; gap: 6px; }
+  .leg { display: grid; grid-template-columns: minmax(0, 1fr) auto 22px; gap: 10px; align-items: center; padding: 10px 12px; }
+  .leg .name { font-weight: 600; font-size: 14px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .leg .meta { color: var(--muted); font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .leg .x { border: 0; background: none; color: var(--faint); font-size: 18px; padding: 0; line-height: 1; }
+  .payout-card { padding: 14px; }
+  .seg { display: grid; grid-template-columns: 1fr 1fr; background: var(--bg); border: 1px solid var(--border); border-radius: 10px; padding: 3px; margin-bottom: 12px; }
+  .seg button { border: 0; background: none; padding: 7px; border-radius: 8px; color: var(--muted); font-weight: 600; font-size: 13px; }
+  .seg button.on { background: var(--surface-3); color: var(--text); }
+  .stake-row { display: flex; justify-content: space-between; color: var(--muted); font-size: 12.5px; margin-bottom: 6px; }
+  .stake-row b { color: var(--text); }
+  input[type=range] { width: 100%; accent-color: var(--accent); }
+  .payouts { border-top: 1px solid var(--border); margin-top: 12px; padding-top: 12px; font-size: 13px; }
+  .payouts .row { display: flex; justify-content: space-between; padding: 3px 0; color: var(--muted); }
+  .payouts .row b { color: var(--text); font-weight: 600; }
+  .payouts .max { display: flex; justify-content: space-between; align-items: baseline; margin-bottom: 6px; }
+  .payouts .max span { color: var(--muted); font-size: 12px; } .payouts .max b { font-size: 24px; font-weight: 800; }
+  .slip-warn { color: var(--warn); font-size: 12px; margin-top: 8px; }
+
+  /* Record */
+  .summary { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px; margin: 0 0 14px; }
+  @media (max-width: 720px) { .summary { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+  .summary > div { padding: 12px 14px; }
+  .summary dt { color: var(--faint); font-size: 11px; text-transform: uppercase; letter-spacing: 0.06em; }
+  .summary dd { margin: 3px 0 0; font-size: 22px; font-weight: 700; }
+  .summary small { display: block; color: var(--muted); font-size: 12px; font-weight: 400; }
+  details.fold { margin-bottom: 8px; }
+  details.fold > summary { list-style: none; cursor: pointer; display: flex; justify-content: space-between; align-items: center; gap: 12px; padding: 13px 14px; }
+  details.fold > summary::-webkit-details-marker { display: none; }
+  details.fold > summary .chev { color: var(--faint); transition: transform .15s; }
+  details.fold[open] > summary .chev { transform: rotate(90deg); }
+  details.fold .fold-body { border-top: 1px solid var(--border); padding: 4px 0; }
+  table.results { width: 100%; border-collapse: collapse; font-size: 13px; }
+  table.results th { text-align: left; color: var(--faint); font-weight: 500; font-size: 11px; padding: 8px 14px; }
+  table.results td { padding: 9px 14px; border-top: 1px solid var(--border); }
+  table.results .r { text-align: right; }
+  @media (max-width: 520px) { table.results .hide-sm { display: none; } table.results th, table.results td { padding-left: 10px; padding-right: 10px; } }
   .learn table { width: 100%; border-collapse: collapse; font-size: 12.5px; }
   .learn th { text-align: left; color: var(--faint); font-weight: 500; font-size: 11px; padding: 4px 0; }
   .learn td { padding: 5px 0; border-top: 1px solid var(--border); }
   .learn .r { text-align: right; }
+  .learn-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 18px; padding: 12px 14px 14px; }
+  @media (max-width: 720px) { .learn-grid { grid-template-columns: minmax(0, 1fr); } }
+  .progress { height: 6px; border-radius: 3px; background: var(--surface-3); overflow: hidden; margin: 8px 0 2px; }
+  .progress span { display: block; height: 100%; background: linear-gradient(90deg, var(--accent), var(--pos)); border-radius: 3px; }
 
-  /* Line tools, phone panel */
-  .line-tools { margin: 8px 0 0 36px; font-size: 12px; }
-  @media (max-width: 760px) { .line-tools { margin-left: 0; } }
-  .line-tools .link { color: var(--faint); text-decoration: underline; text-underline-offset: 2px; }
-  .line-tools .link:hover { color: var(--text); }
-  .line-form { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin-top: 6px; }
-  .line-form input { width: 90px; background: var(--bg); border: 1px solid var(--border-strong); border-radius: 8px; padding: 6px 8px; }
-  .line-form .btn { padding: 6px 12px; font-size: 12.5px; }
-  .notice { padding: 10px 14px; margin-bottom: 10px; font-size: 13px; color: var(--text); border-color: rgba(143, 179, 255, 0.35); }
-  .modal { position: fixed; inset: 0; background: rgba(5, 8, 16, 0.7); display: grid; place-items: center; z-index: 50; padding: 16px; }
-  .modal .panel { max-width: 420px; width: 100%; padding: 20px; }
+  /* Research */
+  .form { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; padding: 14px; }
+  @media (min-width: 721px) { .form { grid-template-columns: 140px minmax(0, 1fr) 160px 90px auto; align-items: end; } }
+  .field label { display: block; color: var(--faint); font-size: 11px; margin-bottom: 4px; }
+  .field input, .field select { width: 100%; background: var(--bg); border: 1px solid var(--border-strong); border-radius: 9px; padding: 9px 10px; }
+  .field input:focus, .field select:focus { outline: none; border-color: var(--accent); }
+  .msg { color: var(--neg); font-size: 13px; margin-top: 8px; }
+  .report { padding: 16px; margin-top: 12px; }
+  .report-grid { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 8px; margin: 12px 0; }
+  @media (max-width: 720px) { .report-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+  .stat-box { border: 1px solid var(--border); border-radius: 10px; padding: 8px 10px; }
+  .stat-box dt { color: var(--faint); font-size: 11px; } .stat-box dd { margin: 2px 0 0; font-weight: 700; }
+  .stat-box small { color: var(--muted); font-size: 11.5px; display: block; }
+  .reasons { margin: 10px 0 0; padding-left: 18px; color: var(--muted); font-size: 13px; }
+
+  /* Modals */
+  .modal { position: fixed; inset: 0; background: rgba(5, 8, 16, 0.78); display: grid; place-items: center; z-index: 50; padding: 16px; }
+  .modal .card { max-width: 440px; width: 100%; padding: 18px; max-height: 92vh; overflow: auto; }
   .modal h3 { margin: 0 0 6px; font-size: 16px; }
   .modal p, .modal li { color: var(--muted); font-size: 13px; }
+  .modal img { width: 100%; border-radius: 12px; display: block; margin: 10px 0; }
   .modal .qr { background: #fff; border-radius: 10px; padding: 8px; width: fit-content; margin: 12px auto; }
   .modal .qr svg { display: block; width: 200px; height: 200px; }
   .modal code { display: block; word-break: break-all; background: var(--bg); border: 1px solid var(--border); border-radius: 8px; padding: 8px; font-size: 12px; color: var(--text); }
-
-  /* Slip */
-  .slip { position: sticky; top: 24px; padding: 16px; }
-  .slip-head { display: flex; justify-content: space-between; align-items: baseline; margin-bottom: 12px; }
-  .slip-head h2 { font-size: 15px; font-weight: 600; margin: 0; }
-  .seg { display: grid; grid-template-columns: 1fr 1fr; background: var(--bg); border: 1px solid var(--border); border-radius: 8px; padding: 3px; margin-bottom: 12px; }
-  .seg button { border: 0; background: none; padding: 6px; border-radius: 6px; color: var(--muted); font-weight: 500; font-size: 13px; }
-  .seg button.on { background: var(--surface-2); color: var(--text); }
-  .legs { display: flex; flex-direction: column; gap: 6px; margin-bottom: 14px; }
-  .leg { display: grid; grid-template-columns: minmax(0, 1fr) auto 18px; gap: 10px; align-items: center; padding: 8px 10px; border: 1px solid var(--border); border-radius: 8px; }
-  .leg .name { font-weight: 500; font-size: 13px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-  .leg .meta { color: var(--muted); font-size: 11.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-  .leg .side-badge { min-width: 0; padding: 2px 7px; font-size: 11px; }
-  .leg .x { border: 0; background: none; color: var(--faint); font-size: 16px; line-height: 1; padding: 0; }
-  .leg .x:hover { color: var(--neg); }
-  .stake { margin-bottom: 14px; }
-  .stake-row { display: flex; justify-content: space-between; color: var(--muted); font-size: 12.5px; margin-bottom: 6px; }
-  .stake-row b { color: var(--text); font-weight: 600; }
-  input[type=range] { width: 100%; accent-color: var(--accent); }
-  .payouts { border-top: 1px solid var(--border); padding-top: 12px; font-size: 13px; }
-  .payouts .row { display: flex; justify-content: space-between; padding: 3px 0; color: var(--muted); }
-  .payouts .row b { color: var(--text); font-weight: 500; }
-  .payouts .max { display: flex; justify-content: space-between; align-items: baseline; margin-bottom: 6px; }
-  .payouts .max span { color: var(--muted); font-size: 12px; }
-  .payouts .max b { font-size: 22px; font-weight: 600; }
-  .slip-warn { color: #e5c07b; font-size: 12px; margin-top: 10px; }
-  .slip-foot { color: var(--faint); font-size: 11.5px; margin-top: 12px; }
-  .link { background: none; border: 0; color: var(--muted); font-size: 12px; padding: 0; }
-  .link:hover { color: var(--neg); }
 </style>
 </head>
 <body>
-<header class="topbar">
-  <div class="topbar-inner">
-    <div style="display:flex;align-items:center;gap:18px;flex-wrap:wrap">
-      <div class="brand"><h1>Daily Slip</h1><span id="today"></span></div>
-      <nav class="tabs" id="tabs"><button data-view="today">Today</button><button data-view="record">Record</button></nav>
-      <button class="btn" id="phoneBtn" style="padding:5px 12px;font-size:13px" hidden>Phone</button>
+<header class="top">
+  <div class="top-inner">
+    <div class="brand">
+      <svg width="34" height="34" viewBox="0 0 64 64" aria-hidden="true">
+        <defs><linearGradient id="lg" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#18233e"/><stop offset="1" stop-color="#090d1b"/></linearGradient></defs>
+        <rect width="64" height="64" rx="14" fill="url(#lg)"/>
+        <rect x="11" y="34" width="8" height="14" rx="2" fill="#344670"/><rect x="22" y="28" width="8" height="20" rx="2" fill="#4e68a0"/>
+        <rect x="33" y="31" width="8" height="17" rx="2" fill="#344670"/><rect x="44" y="18" width="8" height="30" rx="2" fill="#3ecf8e"/>
+        <path d="M8 25.5H56" stroke="#8fb3ff" stroke-width="2.4" stroke-linecap="round" stroke-dasharray="3.5 3"/>
+      </svg>
+      <div><h1>Daily Slip</h1><div class="date" id="today"></div></div>
     </div>
-    <div class="status" id="status"></div>
+    <div class="top-right">
+      <span class="status-pill" id="status"></span>
+      <nav class="tabs" id="tabs">
+        <button data-view="today"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M4 20V10M10 20V4M16 20v-7M22 20H2"/></svg>Today</button>
+        <button data-view="slip"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 3h14v18l-3-2-2 2-2-2-2 2-2-2-3 2z"/><path d="M9 8h6M9 12h6"/></svg>Slip<span class="badge" id="slipBadge" hidden></span></button>
+        <button data-view="record"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 12l5 5L20 6"/></svg>Record</button>
+        <button data-view="research"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="11" cy="11" r="7"/><path d="M20 20l-4-4"/></svg>Research</button>
+      </nav>
+      <button class="icon-btn" id="phoneBtn" hidden>Phone</button>
+    </div>
   </div>
 </header>
 
-<div class="layout">
-  <aside class="side">
-    <h3>Leagues</h3>
-    <div class="filters" id="filters"></div>
-    <p class="side-note">Only leagues with picks today are listed. <a href="#research" id="jumpResearch">Research a player</a></p>
-  </aside>
-
-  <main>
-    <section id="recordView" hidden></section>
-    <div id="todayView">
-    <section id="daily"></section>
-
-    <details class="research" id="research">
-      <summary>Research a player <span style="color:var(--faint);font-weight:400;font-size:12px">free · ESPN game logs · no credits</span></summary>
-      <form class="form panel" id="researchForm" autocomplete="off">
-        <div class="field"><label for="league">League</label><select id="league"></select></div>
-        <div class="field"><label for="player">Player</label><input id="player" list="playerList" placeholder="Player name"><datalist id="playerList"></datalist></div>
-        <div class="field"><label for="prop">Prop</label><select id="prop"></select></div>
-        <div class="field"><label for="lineInput">Line</label><input id="lineInput" class="num" type="number" step="0.5" min="0" placeholder="24.5"></div>
-        <button class="btn btn-primary" id="analyzeBtn" type="submit">Analyze</button>
-      </form>
-      <div id="formMsg" class="msg" hidden></div>
-      <div id="report"></div>
-    </details>
-    </div>
-  </main>
-
-  <aside class="slip panel">
-    <div class="slip-head"><h2>Slip</h2><span class="num" id="slipCount" style="color:var(--muted);font-size:12px"></span></div>
-    <div class="seg"><button data-mode="power">Power</button><button data-mode="flex">Flex</button></div>
-    <div class="legs" id="legs"></div>
-    <div class="stake">
-      <div class="stake-row"><span>Stake</span><b class="num" id="stakeVal"></b></div>
-      <input id="stake" type="range" min="1" max="200" step="1">
-    </div>
-    <div class="payouts" id="payouts"></div>
-    <div class="slip-warn" id="slipWarn"></div>
-    <div style="display:flex;justify-content:space-between;align-items:center;margin-top:12px">
-      <span class="slip-foot" style="margin:0">Preview only. Nothing is sent to PrizePicks.</span>
-      <button class="link" id="clearSlip">Clear</button>
-    </div>
-  </aside>
-</div>
+<main>
+  <section class="view" id="view-today"></section>
+  <section class="view" id="view-slip" hidden></section>
+  <section class="view" id="view-record" hidden></section>
+  <section class="view" id="view-research" hidden>
+    <h2 class="h2">Research a player</h2>
+    <p class="sub">Free ESPN game logs, no credits. Check any player and line, then add it to your slip.</p>
+    <form class="form card" id="researchForm" autocomplete="off">
+      <div class="field"><label for="league">League</label><select id="league"></select></div>
+      <div class="field"><label for="player">Player</label><input id="player" list="playerList" placeholder="Player name"><datalist id="playerList"></datalist></div>
+      <div class="field"><label for="prop">Prop</label><select id="prop"></select></div>
+      <div class="field"><label for="lineInput">Line</label><input id="lineInput" type="number" step="0.5" min="0" inputmode="decimal" placeholder="24.5"></div>
+      <button class="btn btn-primary" id="analyzeBtn" type="submit">Analyze</button>
+    </form>
+    <div id="formMsg" class="msg" hidden></div>
+    <div id="report"></div>
+  </section>
+</main>
 
 <script>
 const CONFIG = __CONFIG__;
@@ -1875,16 +1867,18 @@ const PAYOUTS = {
   flex: { 3: { 3: 3, 2: 1 }, 4: { 4: 6, 3: 1.5 }, 5: { 5: 10, 4: 2, 3: 0.4 }, 6: { 6: 25, 5: 2, 4: 0.4 } }
 };
 const MAX_LEGS = 6;
+const SHRINK = CONFIG.shrink ?? 0.7, MAX_POWER = CONFIG.max_power_legs ?? 3;
+const cautious = p => 0.5 + (p - 0.5) * SHRINK;   // the picker trims estimates toward 50/50 to allow for error
 
 const store = {
   get(k, d) { try { const v = localStorage.getItem(k); return v ? JSON.parse(v) : d; } catch (e) { return d; } },
   set(k, v) { try { localStorage.setItem(k, JSON.stringify(v)); } catch (e) {} }
 };
 const state = {
-  daily: null, dailyError: null, loading: false,
+  daily: null, dailyError: null, dailyErrorTitle: null, noRetry: false, loading: false, nextScan: null,
   researched: store.get('ps_researched', []), slip: store.get('ps_slip', []),
   mode: store.get('ps_mode', 'flex'), stake: store.get('ps_stake', 10), filter: 'all',
-  view: 'today', history: null, results: {}, live: {}, editing: null, lineMsg: null
+  view: 'today', history: null, results: {}, live: {}, editing: null, lineMsg: null, open: null
 };
 function persist() {
   store.set('ps_researched', state.researched); store.set('ps_slip', state.slip);
@@ -1895,13 +1889,16 @@ const $ = s => document.querySelector(s);
 const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 const money = v => '$' + v.toFixed(2);
 const pct = v => (v * 100).toFixed(1) + '%';
+const pct0 = v => Math.round(v * 100) + '%';
+const evStr = v => (v >= 0 ? '+' : '-') + Math.abs(v * 100).toFixed(1) + '%';
 const dailyPicks = () => (state.daily && state.daily.picks) || [];
 const leagueLabel = k => (LEAGUE[k] || {}).label || k;
 const hitsFor = (w, side) => side === 'MORE' ? w.over : w.under;
 const hitStr = (w, side) => w && w.n ? `${hitsFor(w, side)}/${w.n}` : '—';
 const fmtTime = iso => new Date(iso).toLocaleString([], { weekday: 'short', hour: 'numeric', minute: '2-digit' });
+const todaysResult = id => state.daily && state.results[`${state.daily.date}|${id}`];
 
-/* ── Picks shared by slip ── */
+/* ───────── Picks and slip ───────── */
 function findPick(id) {
   const d = dailyPicks().find(p => p.id === id);
   if (d) return { id, player: d.player, league: d.sport, prop: d.prop, line: d.line, side: d.side, prob: d.final_p,
@@ -1914,39 +1911,81 @@ function togglePick(id) {
   else {
     const p = findPick(id);
     if (!p) return;
-    if (state.slip.length >= MAX_LEGS) return flash(`A slip holds up to ${MAX_LEGS} picks.`);
+    if (state.slip.length >= MAX_LEGS) return toast(`A slip holds up to ${MAX_LEGS} picks.`);
     const clash = state.slip.map(findPick).find(x => x && x.player === p.player);
     if (clash) state.slip.splice(state.slip.indexOf(clash.id), 1);   // one pick per player
     state.slip.push(id);
   }
   render();
 }
-function flash(text) { $('#slipWarn').textContent = text; }
+let toastTimer;
+function toast(text) {
+  let t = $('#toast');
+  if (!t) { t = document.createElement('div'); t.id = 'toast';
+    t.style.cssText = 'position:fixed;left:50%;transform:translateX(-50%);bottom:calc(84px + env(safe-area-inset-bottom));z-index:60;background:#1a2440;border:1px solid rgba(148,163,184,.25);border-radius:10px;padding:9px 14px;font-size:13px;box-shadow:0 8px 30px rgba(0,0,0,.4)';
+    document.body.appendChild(t); }
+  t.textContent = text; t.hidden = false;
+  clearTimeout(toastTimer); toastTimer = setTimeout(() => { t.hidden = true; }, 2600);
+}
 
-/* ── Status bar ── */
-function renderStatus() {
-  $('#today').textContent = new Date().toLocaleDateString([], { weekday: 'long', month: 'long', day: 'numeric' });
-  const d = state.daily, bits = [];
-  if (d && d.scanned_at) {
-    bits.push(`Updated <b>${new Date(d.scanned_at).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}</b>`);
-    if (d.credits_remaining != null) bits.push(`<b class="num">${d.credits_remaining}</b> credits left`);
+/* ───────── Entry options: every size, side by side ───────── */
+function distribution(probs) {
+  let dist = [1];
+  for (const p of probs) { const nx = new Array(dist.length + 1).fill(0); dist.forEach((v, i) => { nx[i] += v * (1 - p); nx[i + 1] += v * p; }); dist = nx; }
+  return dist;
+}
+function payTable(kind, n) { return kind === 'power' ? (PAYOUTS.power[n] ? { [n]: PAYOUTS.power[n] } : null) : PAYOUTS.flex[n] || null; }
+function entryOptions() {
+  const picks = dailyPicks();
+  const out = [];
+  for (let n = 2; n <= Math.min(picks.length, MAX_LEGS); n++) {
+    const legs = picks.slice(0, n);
+    const teams = new Set(legs.map(p => ((p.report || {}).player || {}).team || p.game + p.player));
+    if (teams.size < 2) continue;
+    const probs = legs.map(p => cautious(p.final_p));
+    const dist = distribution(probs);
+    for (const kind of ['power', 'flex']) {
+      if (kind === 'power' && n > MAX_POWER) continue;
+      const table = payTable(kind, n);
+      if (!table) continue;
+      const tiers = Object.keys(table).map(Number);
+      out.push({ kind, n, ids: legs.map(p => p.id), label: `${n}-pick ${kind === 'power' ? 'Power' : 'Flex'}`,
+                 ev: tiers.reduce((s, h) => s + dist[h] * table[h], 0) - 1,
+                 cash: tiers.filter(h => table[h] > 1).reduce((s, h) => s + dist[h], 0),
+                 top: Math.max(...Object.values(table)) });
+    }
   }
-  if (state.nextScan) bits.push(`Next update <b>${fmtTime(state.nextScan)}</b>`);
-  $('#status').innerHTML = bits.map(b => `<span>${b}</span>`).join('');
+  return out.sort((a, b) => a.n - b.n || (a.kind === 'power' ? -1 : 1));
+}
+function bestOption(opts) {
+  const e = state.daily && state.daily.entry;
+  if (e && e.kind) return opts.find(o => o.kind === e.kind && o.n === e.legs) || null;
+  return opts.slice().sort((a, b) => b.ev - a.ev)[0] || null;
+}
+function applyOption(o) {
+  state.slip = o.ids.slice(); state.mode = o.kind; render();
+  toast(`${o.label} loaded into your slip`);
 }
 
-/* ── Sidebar: only leagues that have picks ── */
-function renderFilters() {
-  const counts = {};
-  dailyPicks().forEach(p => { counts[p.sport] = (counts[p.sport] || 0) + 1; });
-  if (state.filter !== 'all' && !counts[state.filter]) state.filter = 'all';
-  const items = [['all', 'All', dailyPicks().length]].concat(Object.keys(counts).map(k => [k, leagueLabel(k), counts[k]]));
-  $('#filters').innerHTML = items.map(([k, label, n]) =>
-    `<button class="filter ${state.filter === k ? 'active' : ''}" data-filter="${k}"><span>${esc(label)}</span><span class="count num">${n}</span></button>`).join('');
+/* ───────── Header ───────── */
+function renderHeader() {
+  $('#today').textContent = new Date().toLocaleDateString([], { weekday: 'long', month: 'short', day: 'numeric' });
+  const d = state.daily, bits = [];
+  if (d && d.scanned_at) bits.push(`Updated <b>${new Date(d.scanned_at).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}</b>`);
+  if (state.nextScan) bits.push(`next <b>${fmtTime(state.nextScan)}</b>`);
+  $('#status').innerHTML = bits.join(' · ');
+  document.querySelectorAll('#tabs button').forEach(b => b.classList.toggle('on', b.dataset.view === state.view));
+  const n = state.slip.map(findPick).filter(Boolean).length;
+  $('#slipBadge').hidden = !n; $('#slipBadge').textContent = n;
+  ['today', 'slip', 'record', 'research'].forEach(v => { $('#view-' + v).hidden = state.view !== v; });
 }
-$('#filters').addEventListener('click', e => { const b = e.target.closest('[data-filter]'); if (b) { state.filter = b.dataset.filter; render(); } });
+$('#tabs').addEventListener('click', e => {
+  const b = e.target.closest('[data-view]'); if (!b) return;
+  state.view = b.dataset.view; render(); window.scrollTo(0, 0);
+  if (state.view === 'record') loadHistory();
+});
 
-/* ── Mini chart: last 10 results vs the line ── */
+/* ───────── Mini chart: last 10 results vs the line ───────── */
 function spark(points, line, side, w = 150, h = 34) {
   if (!points || !points.length) return '';
   const max = Math.max(line, ...points.map(p => p.value)) * 1.1 || 1;
@@ -1954,88 +1993,107 @@ function spark(points, line, side, w = 150, h = 34) {
   const bars = points.map((p, i) => {
     const hit = side === 'MORE' ? p.value > line : p.value < line;
     const color = p.value === line ? 'var(--faint)' : hit ? 'var(--pos)' : 'var(--neg)';
-    return `<rect x="${i * bw + 1.5}" y="${y(p.value)}" width="${Math.max(2, bw - 3)}" height="${Math.max(1, h - y(p.value))}" rx="1.5" fill="${color}" opacity="0.75"><title>${esc(p.date)} ${esc(p.opp)}: ${p.value}</title></rect>`;
+    return `<rect x="${i * bw + 1.5}" y="${y(p.value)}" width="${Math.max(2, bw - 3)}" height="${Math.max(1, h - y(p.value))}" rx="1.5" fill="${color}" opacity="0.8"><title>${esc(p.date)} ${esc(p.opp)}: ${p.value}</title></rect>`;
   }).join('');
-  return `<svg viewBox="0 0 ${w} ${h}" width="${w}" height="${h}" role="img" aria-label="Last ${points.length} games vs line ${line}">${bars}
-    <line x1="0" x2="${w}" y1="${y(line)}" y2="${y(line)}" stroke="var(--muted)" stroke-width="1" stroke-dasharray="3 3"/></svg>`;
+  return `<svg viewBox="0 0 ${w} ${h}" width="100%" height="${h}" preserveAspectRatio="none" role="img" aria-label="Last ${points.length} games vs line ${line}">${bars}
+    <line x1="0" x2="${w}" y1="${y(line)}" y2="${y(line)}" stroke="var(--muted)" stroke-width="1" stroke-dasharray="3 3" vector-effect="non-scaling-stroke"/></svg>`;
 }
 
-/* ── Today's picks ── */
+/* ───────── Today ───────── */
+function heroCard() {
+  const d = state.daily, e = d && d.entry, opts = entryOptions(), best = bestOption(opts);
+  if (e && !e.play) {
+    return `<div class="hero"><div class="eyebrow">Today's call</div><div class="title">Sit out today</div>
+      <p class="muted" style="margin:6px 0 14px;position:relative;z-index:1">No entry size clears the +${Math.round((CONFIG.min_ev || 0.02) * 100)}% bar${best ? ` (best: ${esc(best.label)}, ${evStr(best.ev)})` : ''}. The picks are below if you want to research them.</p>
+      <div class="actions"><button class="btn" data-goto="slip">Compare sizes</button></div></div>`;
+  }
+  if (!best) return '';
+  const top = money(state.stake * best.top);
+  return `<div class="hero"><div class="eyebrow">Today's best play</div>
+    <div class="title">${esc(best.label)}<small>${best.n} legs</small></div>
+    <dl class="hero-stats">
+      <div><dt>Chance to cash</dt><dd>${pct0(best.cash)}</dd></div>
+      <div><dt>Est. value</dt><dd class="${best.ev >= 0 ? 'pos' : 'neg'}">${evStr(best.ev)}</dd></div>
+      <div><dt>$${state.stake} pays up to</dt><dd>${top}</dd></div>
+    </dl>
+    <div class="actions"><button class="btn btn-primary" data-load-best>Use this slip</button><button class="btn" data-goto="slip">Compare sizes</button></div></div>`;
+}
 function pickRow(p) {
-  const r = p.report, sel = state.slip.includes(p.id), m = r && r.matchup, ng = r && r.next_game;
-  const team = r && r.player.team;
-  const meta = [leagueLabel(p.sport), team, p.commence ? fmtTime(p.commence) : null].filter(Boolean).join(' · ');
-  const gap = p.line_gap ? `Books' line ${p.book_line} vs PrizePicks ${p.line}` : null;
-  const why = [p.n_books ? `${p.n_books} book${p.n_books === 1 ? '' : 's'}: ${p.books}` : p.books, gap, ng ? `Next ${ng.home ? 'vs' : '@'} ${ng.opp_abbr}${m ? ` · #${m.rank} of ${m.of} in ${m.what}` : ''}` : null].filter(Boolean).join('  ·  ');
+  const r = p.report, inSlip = state.slip.includes(p.id), open = state.open === p.id;
+  const m = r && r.matchup, ng = r && r.next_game, lv = state.live[p.id], res = todaysResult(p.id);
+  const meta = [leagueLabel(p.sport), r && r.player.team, p.commence ? fmtTime(p.commence) : null].filter(Boolean).join(' · ');
+  const gap = p.line_gap ? ` · <span class="${(p.side === 'MORE') === (p.line_gap > 0) ? 'pos' : 'neg'}">books ${p.line_gap > 0 ? '+' : ''}${p.line_gap}</span>` : '';
+  const why = [p.n_books ? `${p.n_books} book${p.n_books === 1 ? '' : 's'}: ${p.books}` : p.books,
+               p.line_gap ? `Books' line ${p.book_line} vs PrizePicks ${p.line}` : null,
+               ng ? `Next ${ng.home ? 'vs' : '@'} ${ng.opp_abbr}${m ? ` · #${m.rank} of ${m.of} in ${m.what}` : ''}` : null].filter(Boolean);
+  const live = liveStrip(p, lv);
   return `
-  <article class="pick ${sel ? 'is-selected' : ''}" data-pick="${esc(p.id)}" role="button" tabindex="0" aria-pressed="${sel}">
-    <div class="pick-top">
-      <span class="rank num">${p.rank}</span>
-      <div class="who"><div class="name">${esc(p.player)}</div><div class="meta">${esc(meta)}${staleTag(p)}${entryTag(p)}</div></div>
-      <div class="line"><div class="prop">${esc(p.prop)}</div><div class="val num">${p.line}</div></div>
-      <span class="side-badge ${p.side === 'MORE' ? 'more' : 'less'}">${p.side}</span>
-      ${resultTag(todaysResult(p.id)) || `<span class="tick">${sel ? '✓' : ''}</span>`}
+  <article class="card pick ${inSlip ? 'in-slip' : ''} ${open ? 'open' : ''}" data-pick="${esc(p.id)}">
+    <div class="pick-row" data-toggle-open="${esc(p.id)}">
+      <div style="min-width:0"><div class="name">${esc(p.player)}</div><div class="meta">${esc(meta)}${gap}</div></div>
+      <div class="line"><div class="p">${esc(p.prop)}</div><div class="v">${p.line}</div></div>
+      <div style="text-align:center">${res ? resultTag(res) : `<span class="side ${p.side === 'MORE' ? 'more' : 'less'}">${p.side}</span>`}<div class="est">${pct0(p.final_p)}</div></div>
+      <button class="add" data-add-slip="${esc(p.id)}" aria-label="${inSlip ? 'Remove from' : 'Add to'} slip">${inSlip ? '✓' : '+'}</button>
     </div>
-    <div class="pick-bottom">
-      <dl class="stats num">
+    ${live ? `<div class="pick-live">${live}</div>` : ''}
+    <div class="details">
+      <dl class="stats">
         <div><dt>Est. win</dt><dd>${pct(p.final_p)}</dd></div>
         <div><dt>Books</dt><dd>${pct(p.market_p)}</dd></div>
         <div><dt>Last 10</dt><dd>${r ? hitStr(r.recent.l10, p.side) : '—'}</dd></div>
         <div><dt>Season</dt><dd>${r ? hitStr(r.recent.season, p.side) : '—'}</dd></div>
         <div><dt>Matchup</dt><dd>${m ? m.tier : '—'}</dd></div>
       </dl>
-      <div>${r ? spark(r.chart, p.line, p.side) : ''}</div>
+      ${r ? spark(r.chart, p.line, p.side, 300, 40) : ''}
+      ${why.map(w => `<p class="why">${esc(w)}</p>`).join('')}
+      ${lineTools(p)}
     </div>
-    ${liveStrip(p, state.live[p.id])}
-    <p class="why">${esc(why)}</p>
-    ${lineTools(p)}
   </article>`;
 }
-
-function renderDaily() {
-  const el = $('#daily'), d = state.daily;
-  const head = (title, sub, chips = '') => `<div class="section-head"><div><h2>${title}</h2>${sub ? `<p>${sub}</p>` : ''}</div><div style="display:flex;gap:6px;flex-wrap:wrap">${chips}</div></div>`;
-
-  if (state.loading) {
-    el.innerHTML = head("Today's picks") + `<div class="panel empty"><span class="spinner"></span>&nbsp; Scanning today's slate (max ${CONFIG.budget} credits). About a minute.</div>`;
-    return;
-  }
+function renderToday() {
+  const el = $('#view-today'), d = state.daily;
+  if (state.loading) { el.innerHTML = `<div class="card empty"><span class="spinner"></span>&nbsp; Scanning today's slate…</div>`; return; }
   if (state.dailyError) {
-    el.innerHTML = head("Today's picks") + `<div class="panel empty"><strong>${esc(state.dailyErrorTitle || "Scan didn't finish")}</strong>${esc(state.dailyError)}${state.noRetry ? '' : '<div style="margin-top:12px"><button class="btn" data-scan>Try again</button></div>'}</div>`;
+    el.innerHTML = `<div class="card empty"><strong>${esc(state.dailyErrorTitle || "Scan didn't finish")}</strong>${esc(state.dailyError)}
+      ${state.noRetry ? '' : '<div style="margin-top:12px"><button class="btn" data-scan>Try again</button></div>'}</div>`;
     return;
   }
-  if (!d) { el.innerHTML = head("Today's picks"); return; }
-
+  if (!d) {
+    el.innerHTML = state.needsScan
+      ? `<div class="card empty"><strong>No picks yet today</strong>Run today's scan to get your slip (uses up to ${CONFIG.budget} credits).<div style="margin-top:12px"><button class="btn btn-primary" data-scan>Scan now</button></div></div>`
+      : `<div class="card empty"><span class="spinner"></span></div>`;
+    return;
+  }
   const picks = dailyPicks();
   if (picks.length < 2) {
-    el.innerHTML = head("Today's picks") + `<div class="panel empty"><strong>Lines aren't posted yet</strong>
-      The scan found ${picks.length} usable pick${picks.length === 1 ? '' : 's'}. Props usually go up a few hours before games.
-      ${state.nextScan ? `It will check again at ${fmtTime(state.nextScan)}.` : ''}
-      <div style="margin-top:12px"><button class="btn" data-scan>Scan now</button></div></div>`;
+    el.innerHTML = `<div class="card empty"><strong>Lines aren't posted yet</strong>The scan found ${picks.length} usable pick${picks.length === 1 ? '' : 's'}.
+      ${state.nextScan ? `It checks again ${fmtTime(state.nextScan)}.` : ''}</div>`;
     return;
   }
+  const leagues = [...new Set(picks.map(p => p.sport))];
+  if (state.filter !== 'all' && !leagues.includes(state.filter)) state.filter = 'all';
   const shown = picks.filter(p => state.filter === 'all' || p.sport === state.filter);
-  const sports = (d.sports || []).map(leagueLabel).join(', ');
-  const e = d.entry;
-  const evStr = v => (v >= 0 ? '+' : '-') + Math.abs(v * 100).toFixed(1) + '%';
-  const entryText = !e ? (picks.length >= 3 ? `${picks.length}-pick Flex` : `${picks.length}-pick Power`)
-    : e.play ? `Suggested: ${e.label} · est. EV ${evStr(e.ev)}` : 'Sit out today';
-  const extras = [d.books_used ? `${d.books_used} books` : null, d.injured_skipped ? `${d.injured_skipped} injured skipped` : null].filter(Boolean).join(' · ');
-  const sitOut = e && !e.play ? `<div class="panel" style="padding:12px 16px;margin-bottom:10px;color:var(--muted);font-size:13px">
-      <b style="color:var(--text)">No slip worth playing today.</b> The best option (${esc(e.label || 'none')}${e.ev != null ? ', est. EV ' + evStr(e.ev) : ''}) doesn't clear the +${(CONFIG.min_ev * 100).toFixed(0)}% bar, so the record logs this day as sat out. The picks are still here to research.</div>` : '';
-  el.innerHTML = head("Today's picks",
-      `${entryText} · ${d.lines_compared} lines across ${d.games_scanned} games${sports ? ` (${esc(sports)})` : ''}${extras ? ' · ' + extras : ''}`,
-      `<span class="chip ok">Locked for today</span>${d.pp_matched ? '' : '<span class="chip warn">Confirm lines in the app</span>'}`)
-    + (state.lineMsg ? `<div class="panel notice">${esc(state.lineMsg)}</div>` : '') + sitOut + `<div class="picks">${shown.map(pickRow).join('')}</div>`
-    + `<p class="footnote">Est. win blends a consensus of up to 9 sportsbooks (Pinnacle counts double) with the player's hit rate on this line. When PrizePicks' line differs from the books', the books' odds are converted to the PrizePicks number. Players on the injury report are skipped. The suggested entry is whichever Power or Flex size has the best estimated value.</p>`;
+  const extras = [`${d.lines_compared} lines`, `${d.games_scanned} games`, d.books_used ? `${d.books_used} books` : null,
+                  d.injured_skipped ? `${d.injured_skipped} injured skipped` : null].filter(Boolean).join(' · ');
+  el.innerHTML = heroCard()
+    + (state.lineMsg ? `<div class="card notice">${esc(state.lineMsg)}</div>` : '')
+    + `<div style="display:flex;justify-content:space-between;align-items:end;gap:10px;margin-bottom:10px">
+         <div><h2 class="h2">Today's picks</h2><div class="faint" style="font-size:12px">${esc(extras)}${d.pp_matched ? '' : ' · confirm lines in the app'}</div></div>
+         <span class="faint" style="font-size:12px;white-space:nowrap">Tap a pick for details</span></div>`
+    + (leagues.length > 1 ? `<div class="chips" style="margin-bottom:10px">${['all'].concat(leagues).map(k =>
+        `<button class="chip ${state.filter === k ? 'on' : ''}" data-filter="${k}">${k === 'all' ? 'All' : esc(leagueLabel(k))}</button>`).join('')}</div>` : '')
+    + `<div class="picks">${shown.map(pickRow).join('')}</div>`
+    + `<p class="footnote">Est. win blends up to 9 sportsbooks with the player's hit rate on this line. Injured players are skipped. Estimates, not guarantees; check each line in PrizePicks before entering.</p>`;
 }
-$('#daily').addEventListener('click', e => {
+$('#view-today').addEventListener('click', e => {
   if (e.target.closest('.line-tools')) return lineToolsClick(e);
   if (e.target.closest('[data-scan]')) return loadDaily(true);
-  const c = e.target.closest('[data-pick]'); if (c) togglePick(c.dataset.pick);
-});
-$('#daily').addEventListener('keydown', e => {
-  if ((e.key === 'Enter' || e.key === ' ') && e.target.matches('[data-pick]')) { e.preventDefault(); togglePick(e.target.dataset.pick); }
+  const go = e.target.closest('[data-goto]'); if (go) { state.view = go.dataset.goto; render(); window.scrollTo(0, 0); return; }
+  if (e.target.closest('[data-load-best]')) { const b = bestOption(entryOptions()); if (b) { applyOption(b); state.view = 'slip'; render(); window.scrollTo(0, 0); } return; }
+  const f = e.target.closest('[data-filter]'); if (f) { state.filter = f.dataset.filter; render(); return; }
+  const add = e.target.closest('[data-add-slip]'); if (add) { togglePick(add.dataset.addSlip); return; }
+  const row = e.target.closest('[data-toggle-open]');
+  if (row) { state.open = state.open === row.dataset.toggleOpen ? null : row.dataset.toggleOpen; render(); }
 });
 
 async function loadDaily(scan) {
@@ -2049,23 +2107,359 @@ async function loadDaily(scan) {
       render(); return;
     }
     state.nextScan = d.next_scan;
-    if (d.needs_scan) {
-      if (!d.previous) return loadDaily(true);       // nothing scanned today yet
-      state.daily = d.previous; render(); return;
+    if (d.needs_scan) {                 // never scan on its own: the schedule does that
+      state.needsScan = !d.previous; state.daily = d.previous || null; render(); return;
     }
     state.daily = d;
-    if (store.get('ps_slip_date', '') !== d.date && d.picks.length >= 2) {   // load today's slip once
+    if (store.get('ps_slip_date', '') !== d.date && d.picks.length >= 2) {   // load today's suggested entry once
       state.slip = d.entry ? (d.entry.play ? d.entry.ids.slice() : []) : d.picks.map(p => p.id);
       state.mode = d.entry && d.entry.kind ? d.entry.kind : (d.picks.length >= 3 ? 'flex' : 'power');
       store.set('ps_slip_date', d.date);
     }
     render();
   } catch (e) {
-    state.loading = false; state.dailyError = 'Could not reach the app. Is sports_app.py still running?'; render();
+    state.loading = false; state.dailyError = 'Could not reach the app.'; render();
   }
 }
 
-/* ── Research ── */
+/* ───────── Slip ───────── */
+function renderSlipView() {
+  const el = $('#view-slip');
+  const legs = state.slip.map(findPick).filter(Boolean);
+  if (state.daily) state.slip = legs.map(l => l.id);   // drop stale legs once today's picks are known
+  const n = legs.length, opts = entryOptions(), best = bestOption(opts);
+  const activeKey = `${state.mode}|${state.slip.slice().sort().join(',')}`;
+  const optionCards = opts.length ? `<div class="section-label" style="margin-top:0">Choose your entry</div>
+    <div class="options">${opts.map((o, i) => {
+      const on = `${o.kind}|${o.ids.slice().sort().join(',')}` === activeKey;
+      return `<button class="option ${on ? 'on' : ''}" data-option="${i}">
+        ${best && o.kind === best.kind && o.n === best.n ? '<span class="best">BEST</span>' : ''}
+        <div class="lbl">${esc(o.label)}</div>
+        <dl><div><dt>Chance to cash</dt><dd>${pct0(o.cash)}</dd></div>
+            <div><dt>Est. value</dt><dd class="${o.ev >= 0 ? 'pos' : 'neg'}">${evStr(o.ev)}</dd></div>
+            <div><dt>Pays up to</dt><dd>${o.top}×</dd></div></dl></button>`;
+    }).join('')}</div>
+    <p class="faint" style="font-size:12px;margin:4px 0 0">Uses today's top picks in order. Smaller entries cash more often; bigger ones pay more.</p>` : '';
+
+  const table = payTable(state.mode, n);
+  let pay = '';
+  if (!table) pay = `<div class="muted">${state.mode === 'flex' ? 'Flex needs 3 to 6 picks.' : 'Power needs 2 to 6 picks.'}</div>`;
+  else {
+    const tiers = Object.keys(table).map(Number).sort((a, b) => b - a), top = table[tiers[0]];
+    pay = `<div class="max"><span>To win</span><b>${money(state.stake * top)}</b></div>`
+      + tiers.map(h => `<div class="row"><span>${h} of ${n} correct</span><b>${table[h]}× · ${money(state.stake * table[h])}</b></div>`).join('');
+    if (legs.every(l => l.prob != null)) {
+      const dist = distribution(legs.map(l => cautious(l.prob)));
+      const ev = state.stake * (tiers.reduce((s, h) => s + dist[h] * table[h], 0) - 1);
+      const cash = tiers.filter(h => table[h] > 1).reduce((s, h) => s + dist[h], 0);
+      pay += `<div class="row" style="margin-top:8px;border-top:1px solid var(--border);padding-top:8px"><span>Chance to cash (est.)</span><b>${pct0(cash)}</b></div>
+        <div class="row"><span>Expected value (est.)</span><b class="${ev >= 0 ? 'pos' : 'neg'}">${ev >= 0 ? '+' : '-'}${money(Math.abs(ev))}</b></div>`;
+    }
+  }
+  const warn = n >= 2 && legs.every(l => l.team) && new Set(legs.map(l => l.team)).size === 1 ? 'PrizePicks requires players from at least 2 teams.' : '';
+  el.innerHTML = `<h2 class="h2">Your slip</h2><p class="sub">Pick an entry size, adjust the legs, then share it.</p>`
+    + optionCards
+    + `<div class="slip-grid" style="margin-top:18px">
+        <div><div class="section-label" style="margin-top:0">Legs · ${n} of ${MAX_LEGS}</div>
+          <div class="legs">${n ? legs.map(l => {
+            const lv = state.live[l.id], res = todaysResult(l.id);
+            const status = res ? resultTag(res) : `<span class="side ${l.side === 'MORE' ? 'more' : 'less'}">${l.side}</span>`;
+            const liveTxt = lv && lv.value != null && lv.state !== 'pre' ? ` · <span class="${legStatus(l, lv)}">${lv.state === 'in' ? 'live' : 'final'} ${lv.value}</span>` : '';
+            return `<div class="card leg"><div style="min-width:0"><div class="name">${esc(l.player)}</div>
+              <div class="meta">${esc(leagueLabel(l.league))} · ${esc(l.prop)} ${l.line}${l.prob != null ? ` · ${pct0(l.prob)}` : ''}${liveTxt}</div></div>
+              ${status}<button class="x" data-unslip="${esc(l.id)}" aria-label="Remove ${esc(l.player)}">×</button></div>`;
+          }).join('') : `<div class="card empty" style="padding:20px"><strong>No legs yet</strong>Pick an entry above, or add picks from Today with +.</div>`}</div>
+          ${n ? `<div style="display:flex;gap:8px;margin-top:12px;flex-wrap:wrap">
+            <button class="btn btn-primary" id="shareBtn">Share slip image</button><button class="btn" id="clearSlip">Clear</button></div>` : ''}
+        </div>
+        <div class="card payout-card">
+          <div class="seg"><button data-mode="power" class="${state.mode === 'power' ? 'on' : ''}">Power</button><button data-mode="flex" class="${state.mode === 'flex' ? 'on' : ''}">Flex</button></div>
+          <div class="stake-row"><span>Stake</span><b>$${state.stake}</b></div>
+          <input id="stake" type="range" min="1" max="200" step="1" value="${state.stake}" aria-label="Stake">
+          <div class="payouts">${pay}</div>
+          ${warn ? `<div class="slip-warn">${warn}</div>` : ''}
+          <p class="faint" style="font-size:11.5px;margin:10px 0 0">Preview only. Nothing is sent to PrizePicks.</p>
+        </div></div>`;
+}
+$('#view-slip').addEventListener('click', e => {
+  const o = e.target.closest('[data-option]'); if (o) { applyOption(entryOptions()[+o.dataset.option]); return; }
+  const u = e.target.closest('[data-unslip]'); if (u) { state.slip = state.slip.filter(id => id !== u.dataset.unslip); render(); return; }
+  const m = e.target.closest('[data-mode]'); if (m) { state.mode = m.dataset.mode; render(); return; }
+  if (e.target.closest('#clearSlip')) { state.slip = []; render(); return; }
+  if (e.target.closest('#shareBtn')) shareSlip();
+});
+$('#view-slip').addEventListener('input', e => {        // live number while dragging...
+  if (e.target.id !== 'stake') return;
+  state.stake = Number(e.target.value);
+  e.target.closest('.payout-card').querySelector('.stake-row b').textContent = '$' + state.stake;
+});
+$('#view-slip').addEventListener('change', e => {       // ...payouts when you let go
+  if (e.target.id === 'stake') { persist(); renderSlipView(); }
+});
+
+/* ───────── Share: the slip as a picture ───────── */
+function rr(ctx, x, y, w, h, r) { ctx.beginPath(); ctx.moveTo(x + r, y); ctx.arcTo(x + w, y, x + w, y + h, r); ctx.arcTo(x + w, y + h, x, y + h, r); ctx.arcTo(x, y + h, x, y, r); ctx.arcTo(x, y, x + w, y, r); ctx.closePath(); }
+function fit(ctx, text, max) { let t = String(text); while (ctx.measureText(t).width > max && t.length > 3) t = t.slice(0, -2); return t === String(text) ? t : t.slice(0, -1) + '…'; }
+async function drawSlipImage() {
+  const legs = state.slip.map(findPick).filter(Boolean);
+  const n = legs.length, table = payTable(state.mode, n);
+  const W = 1080, rowH = 132, H = 490 + n * (rowH + 16) + 20 + 150 + 110;
+  const c = document.createElement('canvas'); c.width = W; c.height = H;
+  const ctx = c.getContext('2d');
+  try { await document.fonts.ready; } catch (e) {}
+  const F = (w, s) => `${w} ${s}px Inter, system-ui, -apple-system, sans-serif`;
+
+  // background with glows
+  const g = ctx.createLinearGradient(0, 0, 0, H); g.addColorStop(0, '#16203a'); g.addColorStop(1, '#090d1b');
+  ctx.fillStyle = g; ctx.fillRect(0, 0, W, H);
+  const glow = (x, y, r, col) => { const rg = ctx.createRadialGradient(x, y, 0, x, y, r); rg.addColorStop(0, col); rg.addColorStop(1, 'rgba(0,0,0,0)'); ctx.fillStyle = rg; ctx.fillRect(0, 0, W, H); };
+  glow(W - 80, 40, 520, 'rgba(143,179,255,0.22)'); glow(60, H - 60, 520, 'rgba(62,207,142,0.14)');
+
+  // logo + wordmark
+  const L = 92, lx = 72, ly = 70;
+  rr(ctx, lx, ly, L, L, 22); ctx.fillStyle = '#0d1426'; ctx.fill(); ctx.strokeStyle = 'rgba(148,163,184,0.25)'; ctx.lineWidth = 2; ctx.stroke();
+  [[16, 46, 20, '#344670'], [32, 38, 28, '#4e68a0'], [48, 42, 24, '#344670'], [64, 24, 42, '#3ecf8e']].forEach(([x, y, h, col]) => {
+    rr(ctx, lx + x - 2, ly + y + 4, 12, h + 2, 3); ctx.fillStyle = col; ctx.fill(); });
+  ctx.strokeStyle = '#8fb3ff'; ctx.lineWidth = 3; ctx.setLineDash([6, 5]); ctx.beginPath(); ctx.moveTo(lx + 10, ly + 36); ctx.lineTo(lx + L - 10, ly + 36); ctx.stroke(); ctx.setLineDash([]);
+  ctx.fillStyle = '#e6e9ef'; ctx.font = F(800, 44); ctx.fillText('Daily Slip', lx + L + 26, ly + 48);
+  ctx.fillStyle = '#8b94a7'; ctx.font = F(500, 28);
+  ctx.fillText(new Date().toLocaleDateString([], { weekday: 'long', month: 'long', day: 'numeric' }), lx + L + 26, ly + 86);
+
+  // entry title
+  const label = `${n}-PICK ${state.mode === 'power' ? 'POWER' : 'FLEX'}`;
+  ctx.font = F(800, 26); ctx.fillStyle = '#8fb3ff'; ctx.fillText('MY ENTRY', 72, 268);
+  const tg = ctx.createLinearGradient(72, 0, 72 + 700, 0); tg.addColorStop(0, '#ffffff'); tg.addColorStop(1, '#b9cdfd');
+  ctx.font = F(800, 92); ctx.fillStyle = tg; ctx.fillText(label, 68, 360);
+  if (table) {
+    const top = Math.max(...Object.values(table));
+    const pill = `${top}× PAYOUT`; ctx.font = F(800, 28); const pw = ctx.measureText(pill).width + 40;
+    const pg = ctx.createLinearGradient(72, 0, 72 + pw, 0); pg.addColorStop(0, '#8fb3ff'); pg.addColorStop(1, '#3ecf8e');
+    rr(ctx, 72, 392, pw, 54, 27); ctx.fillStyle = pg; ctx.fill();
+    ctx.fillStyle = '#0a0f1d'; ctx.fillText(pill, 92, 429);
+  }
+
+  // legs
+  let y = 490;
+  for (const l of legs) {
+    const res = todaysResult(l.id), lv = state.live[l.id];
+    rr(ctx, 56, y, W - 112, rowH, 26); ctx.fillStyle = 'rgba(15,22,39,0.92)'; ctx.fill();
+    ctx.strokeStyle = res && res.result === 'hit' ? 'rgba(62,207,142,0.6)' : res && res.result === 'miss' ? 'rgba(240,113,120,0.5)' : 'rgba(148,163,184,0.18)';
+    ctx.lineWidth = 2; ctx.stroke();
+    ctx.fillStyle = '#e6e9ef'; ctx.font = F(700, 40); ctx.fillText(fit(ctx, l.player, 520), 92, y + 58);
+    ctx.fillStyle = '#8b94a7'; ctx.font = F(500, 27); ctx.fillText(fit(ctx, `${leagueLabel(l.league)} · ${l.prop}`, 520), 92, y + 100);
+    // line value
+    ctx.textAlign = 'right'; ctx.fillStyle = '#e6e9ef'; ctx.font = F(800, 52); ctx.fillText(String(l.line), W - 300, y + 82); ctx.textAlign = 'left';
+    // side / result pill
+    const more = l.side === 'MORE';
+    let txt = l.side, fg = more ? '#3ecf8e' : '#f07178', bg = more ? 'rgba(62,207,142,0.16)' : 'rgba(240,113,120,0.16)';
+    if (res && res.result) {
+      txt = `${res.result.toUpperCase()}${res.actual != null ? ' ' + res.actual : ''}`;
+      [fg, bg] = res.result === 'hit' ? ['#3ecf8e', 'rgba(62,207,142,0.18)'] : res.result === 'miss' ? ['#f07178', 'rgba(240,113,120,0.18)'] : ['#8b94a7', 'rgba(148,163,184,0.16)'];
+    } else if (lv && lv.state === 'in' && lv.value != null) { txt = `${l.side} · ${lv.value}`; }
+    ctx.font = F(800, 28); const sw = ctx.measureText(txt).width + 44;
+    rr(ctx, W - 92 - sw, y + 38, sw, 56, 16); ctx.fillStyle = bg; ctx.fill();
+    ctx.fillStyle = fg; ctx.fillText(txt, W - 92 - sw + 22, y + 76);
+    y += rowH + 16;
+  }
+
+  // footer stats
+  y += 20;
+  rr(ctx, 56, y, W - 112, 150, 26); ctx.fillStyle = 'rgba(10,15,29,0.75)'; ctx.fill(); ctx.strokeStyle = 'rgba(148,163,184,0.18)'; ctx.lineWidth = 2; ctx.stroke();
+  const cols = [['STAKE', '$' + state.stake], ['TO WIN', table ? money(state.stake * Math.max(...Object.values(table))) : '—']];
+  if (table && legs.every(l => l.prob != null)) {
+    const dist = distribution(legs.map(l => cautious(l.prob)));
+    cols.push(['CHANCE TO CASH', pct0(Object.keys(table).map(Number).filter(h => table[h] > 1).reduce((s, h) => s + dist[h], 0))]);
+  }
+  const cw = (W - 112) / cols.length;
+  cols.forEach(([k, v], i) => {
+    const x = 56 + i * cw + 40;
+    ctx.fillStyle = '#5c6578'; ctx.font = F(700, 22); ctx.fillText(k, x, y + 56);
+    ctx.fillStyle = i === 1 ? '#3ecf8e' : '#e6e9ef'; ctx.font = F(800, 46); ctx.fillText(v, x, y + 112);
+  });
+  ctx.fillStyle = '#5c6578'; ctx.font = F(500, 22);
+  ctx.fillText('Made with Daily Slip · estimates, not guarantees', 72, H - 50);
+  return c;
+}
+async function shareSlip() {
+  const btn = $('#shareBtn'); if (btn) { btn.disabled = true; btn.innerHTML = '<span class="spinner"></span>'; }
+  try {
+    const canvas = await drawSlipImage();
+    const blob = await new Promise(r => canvas.toBlob(r, 'image/png'));
+    const file = new File([blob], `daily-slip-${new Date().toISOString().slice(0, 10)}.png`, { type: 'image/png' });
+    if (navigator.canShare && navigator.canShare({ files: [file] })) {
+      try { await navigator.share({ files: [file], title: 'My Daily Slip' }); return; } catch (e) { if (e.name === 'AbortError') return; }
+    }
+    const url = URL.createObjectURL(blob);
+    const m = document.createElement('div'); m.className = 'modal';
+    m.innerHTML = `<div class="card"><h3>Your slip image</h3><p>Press and hold the image to save or share it, or download it.</p>
+      <img src="${url}" alt="Slip image"><div style="display:flex;gap:8px;justify-content:flex-end">
+      <a class="btn btn-primary" href="${url}" download="${file.name}" style="text-decoration:none">Download</a><button class="btn" data-close>Done</button></div></div>`;
+    m.addEventListener('click', ev => { if (ev.target === m || ev.target.hasAttribute('data-close')) { m.remove(); URL.revokeObjectURL(url); } });
+    document.body.appendChild(m);
+  } finally { if (btn) { btn.disabled = false; btn.textContent = 'Share slip image'; } }
+}
+
+/* ───────── Live in-game tracking ───────── */
+function legStatus(p, lv) {
+  if (!lv || lv.value == null) return '';
+  return (p.side === 'MORE') === (lv.value > p.line) ? 'pos' : (lv.state === 'post' ? 'neg' : '');
+}
+function liveStrip(p, lv) {
+  if (!lv || lv.state === 'pre' || lv.state === 'unknown') return '';
+  const final = lv.state === 'post';
+  const clock = `<span class="clock"><span class="dot"></span>${final ? 'Final' : 'Live · ' + esc(lv.detail)}</span>`;
+  if (lv.value == null) return `<div class="live ${final ? 'final' : ''}">${clock}<span class="muted">${esc(lv.note || '')}</span><span></span></div>`;
+  const v = lv.value, line = p.line, more = p.side === 'MORE', over = v > line;
+  const scale = Math.max(line * 1.5, v, 1);
+  let msg, cls;
+  if (more) { const need = Math.floor(line) + 1 - v; [msg, cls] = over ? ['Cleared', 'pos'] : [final ? 'Missed' : `Needs ${need} more`, final ? 'neg' : '']; }
+  else { [msg, cls] = over ? [final ? 'Missed' : 'Over the line', 'neg'] : [final ? 'Stayed under' : `${(line - v).toFixed(1)} under`, final ? 'pos' : '']; }
+  const barColor = over === more ? 'var(--pos)' : over ? 'var(--neg)' : 'var(--accent)';
+  const pace = lv.pace != null && !final ? `<small>pace ${lv.pace}</small>` : '';
+  return `<div class="live ${final ? 'final' : ''}">${clock}
+    <div class="bar"><span style="width:${Math.min(v / scale, 1) * 100}%;background:${barColor}"></span><i style="left:${line / scale * 100}%"></i></div>
+    <span class="now"><b>${v}</b><small>/ ${line}</small><small class="${cls}" style="font-weight:600">${msg}</small>${pace}</span></div>`;
+}
+let liveTimer;
+async function loadLive() {
+  clearTimeout(liveTimer);
+  let next = 5 * 60 * 1000;
+  try {
+    state.live = await fetch('/api/live').then(r => r.json());
+    if (Object.values(state.live).some(l => l.state === 'in')) next = 30 * 1000;
+    if (Object.values(state.live).some(l => l.state === 'post') && state.history) loadHistory();
+    render();
+  } catch (e) {}
+  liveTimer = setTimeout(loadLive, next);
+}
+
+/* ───────── Line changed / pulled ───────── */
+function lineTools(p) {
+  if (!state.daily || !state.daily.board) return '';
+  const lv = state.live[p.id];
+  if (todaysResult(p.id) || (lv && (lv.state === 'in' || lv.state === 'post'))) return '';
+  if (state.editing !== p.id) {
+    return `<div class="line-tools">${p.line_moved_from != null ? `<span class="muted">Line moved from ${p.line_moved_from} · </span>` : ''}<button class="link" data-edit="${esc(p.id)}">Line changed on PrizePicks?</button></div>`;
+  }
+  return `<div class="line-tools"><div class="line-form">
+      <span class="muted">New line</span>
+      <input type="number" step="0.5" min="0" inputmode="decimal" value="${p.line}" data-newline="${esc(p.id)}">
+      <button class="btn btn-primary" data-update="${esc(p.id)}">Update</button>
+      <button class="btn" data-pulled="${esc(p.id)}">Line pulled</button>
+      <button class="link" data-cancel>Cancel</button></div>
+    <div class="faint" style="margin-top:4px">Re-priced from this morning's saved odds. No credits used.</div></div>`;
+}
+async function lineToolsClick(e) {
+  e.stopPropagation();
+  const t = e.target;
+  if (t.dataset.edit) { state.editing = t.dataset.edit; render(); return; }
+  if (t.hasAttribute('data-cancel')) { state.editing = null; render(); return; }
+  const id = t.dataset.update || t.dataset.pulled;
+  if (!id) return;
+  const body = t.dataset.pulled ? { id, pulled: true } : { id, line: document.querySelector(`[data-newline="${CSS.escape(id)}"]`).value };
+  t.disabled = true; t.innerHTML = '<span class="spinner"></span>';
+  try {
+    const r = await fetch('/api/line', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }).then(x => x.json());
+    if (r.error) state.lineMsg = r.error;
+    else {
+      state.daily = r.daily; state.lineMsg = r.message; state.editing = null;
+      const en = r.daily.entry;
+      state.slip = en && en.play ? en.ids.slice() : [];
+      if (en && en.kind) state.mode = en.kind;
+    }
+  } catch (err) { state.lineMsg = 'Could not reach the app.'; }
+  render();
+}
+
+/* ───────── Record ───────── */
+function resultTag(r) {
+  if (!r || !r.result) return '';
+  const label = { hit: 'HIT', miss: 'MISS', push: 'PUSH', void: 'VOID' }[r.result];
+  return `<span class="res ${r.result}"${r.result === 'void' ? ' title="Did not play"' : ''}>${label}${r.actual != null ? ' ' + r.actual : ''}</span>`;
+}
+async function loadHistory() {
+  try {
+    const h = await fetch('/api/history').then(r => r.json());
+    state.history = h; state.results = {};
+    h.days.forEach(d => d.picks.forEach(p => { if (p.result) state.results[`${d.date}|${p.id}`] = p; }));
+    render();
+  } catch (e) {}
+}
+function groupLabel(key) {
+  const [kind, val] = key.split(/:(.*)/s);
+  if (kind === 'sport') return leagueLabel(val);
+  if (kind === 'side') return `All ${val} picks`;
+  if (kind === 'tier') return val === 'none' ? 'No matchup data' : `${val} matchups`;
+  const [sport, prop, side] = val.split('|');
+  return `${leagueLabel(sport)} ${prop} ${side}`;
+}
+function learningPanel(m) {
+  if (!m) return '';
+  const pp = v => (v >= 0 ? '+' : '-') + Math.abs(v * 100).toFixed(1) + ' pts';
+  const summary = m.active ? `Learning from ${m.n} graded lines` : `Learning: ${m.n} of ${m.learn_min} graded lines`;
+  const changes = [];
+  if (m.active) {
+    changes.push(`<tr><td>Book odds vs. hit-rate blend</td><td class="r">${Math.round(m.market_weight * 100)} / ${Math.round((1 - m.market_weight) * 100)}</td><td class="r faint">was 75 / 25</td></tr>`);
+    if (m.bias) changes.push(`<tr><td>Overall calibration</td><td class="r ${m.bias > 0 ? 'pos' : 'neg'}">${pp(m.bias)}</td><td class="r faint">${m.bias < 0 ? 'was overconfident' : 'was too cautious'}</td></tr>`);
+    Object.entries(m.segments).sort((a, b) => Math.abs(b[1]) - Math.abs(a[1])).slice(0, 6).forEach(([k, v]) => {
+      const g = m.groups.find(x => x.key === k);
+      changes.push(`<tr><td>${esc(groupLabel(k))}</td><td class="r ${v > 0 ? 'pos' : 'neg'}">${pp(v)}</td><td class="r faint">${g ? `${Math.round(g.actual * 100)}% vs ${Math.round(g.expected * 100)}% (${g.n})` : ''}</td></tr>`);
+    });
+  }
+  const calib = (m.calibration || []).map(b => `<tr><td>${Math.round(b.range[0] * 100) || '<'}${b.range[0] ? '–' : ''}${Math.round(b.range[1] * 100)}%</td>
+      <td class="r">${(b.expected * 100).toFixed(1)}%</td><td class="r ${b.actual >= b.expected ? 'pos' : 'neg'}">${(b.actual * 100).toFixed(1)}%</td><td class="r faint">${b.n}</td></tr>`).join('');
+  return `<details class="card fold learn"><summary><div><b>${summary}</b>
+      ${m.active ? '' : `<div class="progress" style="width:180px"><span style="width:${Math.min(m.n / m.learn_min, 1) * 100}%"></span></div>`}</div><span class="chev">›</span></summary>
+    <div class="fold-body"><p class="muted" style="font-size:12.5px;margin:10px 14px 0">${m.active ? 'Adjustments are capped and shrink toward the default when evidence is thin.'
+      : `The picker grades every line it scans, not just your picks. Until it has ${m.learn_min}, it keeps the default blend, because adjusting on fewer lines hurt about as often as it helped.`}</p>
+    <div class="learn-grid">
+      <table><thead><tr><th>Adjustment</th><th class="r">Now</th><th></th></tr></thead>
+        <tbody>${changes.join('') || `<tr><td colspan="3" class="faint">${m.active ? 'Nothing has strayed far enough to adjust.' : 'None yet.'}</td></tr>`}</tbody></table>
+      <table><thead><tr><th>Estimated win</th><th class="r">Expected</th><th class="r">Actual</th><th class="r">Lines</th></tr></thead>
+        <tbody>${calib || '<tr><td colspan="4" class="faint">No graded lines yet.</td></tr>'}</tbody></table>
+    </div></div></details>`;
+}
+function renderRecord() {
+  const el = $('#view-record'), h = state.history;
+  if (!h) { el.innerHTML = '<div class="card empty"><span class="spinner"></span>&nbsp; Checking results…</div>'; return; }
+  const s = h.summary;
+  const plStr = v => (v >= 0 ? '+' : '-') + money(Math.abs(v));
+  const plCls = v => v > 0 ? 'pos' : v < 0 ? 'neg' : '';
+  const leagues = Object.entries(s.by_sport).filter(([, v]) => v.hit + v.miss).map(([k, v]) => `${leagueLabel(k)} ${v.hit}-${v.miss}`).join(' · ');
+  const extras = [s.push ? `${s.push} push` : '', s.void ? `${s.void} void` : '', s.pending ? `${s.pending} pending` : ''].filter(Boolean).join(' · ');
+  let html = `<h2 class="h2">Record</h2><p class="sub">Every daily pick, graded from ESPN box scores.</p>
+    <dl class="summary">
+      <div class="card"><dt>Picks</dt><dd>${s.hit}-${s.miss}</dd><small>${extras || 'wins - losses'}</small></div>
+      <div class="card"><dt>Hit rate</dt><dd>${s.hit_rate == null ? '—' : pct(s.hit_rate)}</dd><small>${esc(leagues) || 'no graded picks yet'}</small></div>
+      <div class="card"><dt>Slips cashed</dt><dd>${s.slips_cashed} of ${s.slips}</dd><small>${s.sat_out ? `${s.sat_out} sat out` : 'suggested entries'}</small></div>
+      <div class="card"><dt>Slip P/L</dt><dd class="${plCls(s.slip_pl)}">${s.slips ? plStr(s.slip_pl) : '—'}</dd><small>at $${s.stake} each</small></div>
+    </dl>` + learningPanel(h.model) + `<div class="section-label">Past slips</div>`;
+  if (!h.days.length) html += '<div class="card empty"><strong>No slips yet</strong>Your first daily slip will show up here.</div>';
+  html += h.days.map((d, i) => {
+    const hits = d.picks.filter(p => p.result === 'hit').length;
+    const decided = d.picks.filter(p => p.result === 'hit' || p.result === 'miss').length;
+    const pending = d.picks.filter(p => !p.result).length;
+    const label = new Date(d.date + 'T12:00').toLocaleDateString([], { weekday: 'short', month: 'short', day: 'numeric' });
+    const right = d.slip && d.slip.sat_out ? `<span class="muted">${hits}/${decided} · sat out</span>`
+      : d.slip ? `<span>${hits}/${decided} · <b class="${plCls(d.slip.pl)}">${plStr(d.slip.pl)}</b></span>`
+      : `<span class="muted">${hits}/${decided} · ${pending} pending</span>`;
+    const rows = d.picks.map(p => {
+      const lv = state.live[p.id];
+      const actual = p.actual ?? (lv && lv.value != null ? lv.value : '—');
+      const result = p.result ? resultTag({ result: p.result }) : lv && lv.state === 'in' ? `<span class="res pending" style="color:var(--neg)">LIVE</span>` : '<span class="res pending">PENDING</span>';
+      return `<tr><td>${esc(p.player)}<div class="faint hide-sm" style="font-size:11.5px">${esc(leagueLabel(p.sport))} · ${esc(p.prop)}</div></td>
+        <td class="r">${p.line}</td><td><span class="${p.side === 'MORE' ? 'pos' : 'neg'}" style="font-weight:700;font-size:12px">${p.side}</span></td>
+        <td class="r">${actual}</td><td class="r">${result}</td></tr>`;
+    }).join('');
+    return `<details class="card fold" ${i === 0 ? 'open' : ''}><summary><div><b>${label}</b> <span class="faint" style="font-size:12px">${d.slip && !d.slip.sat_out ? esc(d.slip.type) : ''}</span></div>
+      <div style="display:flex;gap:10px;align-items:center;font-size:13px">${right}<span class="chev">›</span></div></summary>
+      <div class="fold-body"><table class="results"><thead><tr><th>Player</th><th class="r">Line</th><th>Pick</th><th class="r">Actual</th><th class="r">Result</th></tr></thead><tbody>${rows}</tbody></table></div></details>`;
+  }).join('');
+  html += `<p class="footnote">Slip P/L assumes you played each day's suggested entry at $${s.stake}, and $0 on days it said to sit out. Players who don't play are voided and drop out, as on PrizePicks.</p>`;
+  el.innerHTML = html;
+}
+
+/* ───────── Research ───────── */
 function fillLeagues() {
   $('#league').innerHTML = CONFIG.leagues.map(l => `<option value="${l.key}">${esc(l.label)}</option>`).join('');
   $('#league').value = store.get('ps_league', 'NBA');
@@ -2078,8 +2472,6 @@ function fillProps() {
   store.set('ps_league', l.key);
 }
 $('#league').addEventListener('change', () => { fillProps(); playerIds = {}; });
-$('#jumpResearch').addEventListener('click', () => { $('#research').open = true; });
-
 let playerIds = {}, searchTimer;
 $('#player').addEventListener('input', () => {
   clearTimeout(searchTimer);
@@ -2093,7 +2485,6 @@ $('#player').addEventListener('input', () => {
     } catch (e) {}
   }, 250);
 });
-
 function showMsg(text) { const m = $('#formMsg'); m.textContent = text || ''; m.hidden = !text; }
 $('#researchForm').addEventListener('submit', async e => {
   e.preventDefault();
@@ -2106,28 +2497,26 @@ $('#researchForm').addEventListener('submit', async e => {
     const r = await fetch('/api/analyze', { method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ sport, player, prop, line, player_id: playerIds[player] || null }) }).then(x => x.json());
     if (r.error) showMsg(r.error); else renderReport(r);
-  } catch (err) { showMsg('Could not reach the app. Is sports_app.py still running?'); }
+  } catch (err) { showMsg('Could not reach the app.'); }
   finally { btn.disabled = false; btn.textContent = 'Analyze'; }
 });
-
 function renderReport(r) {
   const v = r.verdict, rc = r.recent, m = r.matchup, ng = r.next_game;
-  const box = (label, w) => `<div class="stat-box"><dt>${label}</dt><dd class="num">${hitStr(w, v.side)}</dd><small>${w && w.n ? 'avg ' + w.avg : 'no games'}</small></div>`;
+  const box = (label, w) => `<div class="stat-box"><dt>${label}</dt><dd>${hitStr(w, v.side)}</dd><small>${w && w.n ? 'avg ' + w.avg : 'no games'}</small></div>`;
   $('#report').innerHTML = `
-  <div class="panel report">
-    <div class="report-head">
-      <div><div class="name">${esc(r.player.name)}</div><div style="color:var(--muted);font-size:12.5px">${esc([r.player.team, r.player.position, r.sport_label].filter(Boolean).join(' · '))}</div></div>
-      <div style="text-align:right"><div style="color:var(--muted);font-size:12px">${esc(r.prop)}</div><div class="num" style="font-size:20px;font-weight:600">${r.line}</div></div>
+  <div class="card report">
+    <div style="display:flex;justify-content:space-between;gap:12px;flex-wrap:wrap">
+      <div><div style="font-size:17px;font-weight:700">${esc(r.player.name)}</div><div class="muted" style="font-size:12.5px">${esc([r.player.team, r.player.position, r.sport_label].filter(Boolean).join(' · '))}</div></div>
+      <div style="text-align:right"><div class="muted" style="font-size:12px">${esc(r.prop)}</div><div style="font-size:20px;font-weight:700">${r.line}</div></div>
     </div>
-    <dl class="report-grid" style="margin:0 0 14px">
+    <dl class="report-grid">
       ${box('Last 5', rc.l5)}${box('Last 10', rc.l10)}${box('Season', rc.season)}${box(rc.vs_opp_abbr ? 'vs ' + esc(rc.vs_opp_abbr) : 'vs opponent', rc.vs_opp)}
-      <div class="stat-box"><dt>Matchup</dt><dd>${m ? m.tier : '—'}</dd><small>${m ? `#${m.rank} of ${m.of} · ${m.per_game} ${esc(m.what)}` : ng ? 'no rating' : 'no game scheduled'}</small></div>
+      <div class="stat-box"><dt>Matchup</dt><dd>${m ? m.tier : '—'}</dd><small>${m ? `#${m.rank} of ${m.of}` : ng ? 'no rating' : 'no game'}</small></div>
     </dl>
-    <div>${spark(r.chart, r.line, v.side, 600, 70).replace('width="600"', 'width="100%"').replace('height="70"', 'height="70" preserveAspectRatio="none"')}</div>
-    <p style="margin:12px 0 0">History leans <span class="${v.side === 'MORE' ? 'pos' : 'neg'}" style="font-weight:600">${v.side}</span>
-      <span style="color:var(--muted)">· ${v.score}% weighted hit rate · ${esc(v.label.toLowerCase())}</span></p>
+    ${spark(r.chart, r.line, v.side, 600, 70)}
+    <p style="margin:12px 0 0">History leans <b class="${v.side === 'MORE' ? 'pos' : 'neg'}">${v.side}</b> <span class="muted">· ${v.score}% weighted hit rate · ${esc(v.label.toLowerCase())}</span></p>
     <ul class="reasons">${v.reasons.map(x => `<li>${esc(x)}</li>`).join('')}${r.notes.map(n => `<li>${esc(n)}</li>`).join('')}</ul>
-    <div class="actions">
+    <div style="display:flex;gap:8px;margin-top:14px;flex-wrap:wrap">
       <button class="btn ${v.side === 'MORE' ? 'btn-primary' : ''}" data-add="MORE">Add MORE to slip</button>
       <button class="btn ${v.side === 'LESS' ? 'btn-primary' : ''}" data-add="LESS">Add LESS to slip</button>
     </div>
@@ -2137,275 +2526,34 @@ function renderReport(r) {
     state.researched = state.researched.filter(p => p.id !== id).concat([{ id, player: r.player.name, league: r.sport, prop: r.prop,
       line: r.line, side: b.dataset.add, prob: null, team: r.player.team }]);
     if (!state.slip.includes(id)) togglePick(id); else render();
+    toast(`${r.player.name} ${b.dataset.add} ${r.line} added to your slip`);
   }));
 }
 
-/* ── Slip ── */
-function renderSlip() {
-  const legs = state.slip.map(findPick).filter(Boolean);
-  if (state.daily) state.slip = legs.map(l => l.id);   // drop stale legs once today's picks are known
-  const n = legs.length;
-  $('#slipCount').textContent = `${n} of ${MAX_LEGS}`;
-  document.querySelectorAll('.seg button').forEach(b => b.classList.toggle('on', b.dataset.mode === state.mode));
-  $('#stake').value = state.stake; $('#stakeVal').textContent = '$' + state.stake;
-  $('#legs').innerHTML = n ? legs.map(l => `
-    <div class="leg"><div style="min-width:0"><div class="name">${esc(l.player)}</div><div class="meta">${esc(leagueLabel(l.league))} · ${esc(l.prop)} ${l.line}${state.live[l.id] && state.live[l.id].value != null && state.live[l.id].state !== 'pre' ? ` · <span class="${legStatus(l, state.live[l.id])}">${state.live[l.id].state === 'in' ? 'live' : 'final'} ${state.live[l.id].value}</span>` : ''}</div></div>
-      <span class="side-badge ${l.side === 'MORE' ? 'more' : 'less'}">${l.side}</span>
-      <button class="x" data-unslip="${esc(l.id)}" aria-label="Remove ${esc(l.player)}">×</button></div>`).join('')
-    : '<div style="color:var(--faint);font-size:13px;padding:8px 0">Select picks to build a slip.</div>';
-
-  const table = state.mode === 'power' ? (PAYOUTS.power[n] ? { [n]: PAYOUTS.power[n] } : null) : PAYOUTS.flex[n] || null;
-  let html = '';
-  if (!table) {
-    html = `<div style="color:var(--muted)">${state.mode === 'flex' ? 'Flex needs 3 to 6 picks.' : 'Power needs 2 to 6 picks.'}</div>`;
-  } else {
-    const tiers = Object.keys(table).map(Number).sort((a, b) => b - a), top = table[tiers[0]];
-    html = `<div class="max"><span>To win</span><b class="num">${money(state.stake * top)}</b></div>`
-      + tiers.map(h => `<div class="row num"><span>${h} of ${n} correct</span><b>${table[h]}× · ${money(state.stake * table[h])}</b></div>`).join('');
-    if (legs.every(l => l.prob != null)) {
-      let dist = [1];
-      for (const l of legs) { const nx = new Array(dist.length + 1).fill(0); dist.forEach((v, i) => { nx[i] += v * (1 - l.prob); nx[i + 1] += v * l.prob; }); dist = nx; }
-      const expMult = tiers.reduce((s, h) => s + dist[h] * table[h], 0), ev = state.stake * (expMult - 1);
-      html += `<div class="row num" style="margin-top:8px;border-top:1px solid var(--border);padding-top:8px"><span>All ${n} hit (est.)</span><b>${pct(dist[n])}</b></div>
-        <div class="row num"><span>Expected value (est.)</span><b class="${ev >= 0 ? 'pos' : 'neg'}">${ev >= 0 ? '+' : '−'}${money(Math.abs(ev))}</b></div>`;
-    }
-  }
-  $('#payouts').innerHTML = html;
-  const warn = [];
-  if (n >= 2 && legs.every(l => l.team) && new Set(legs.map(l => l.team)).size === 1) warn.push('PrizePicks requires players from at least 2 teams.');
-  $('#slipWarn').textContent = warn.join(' ');
-}
-$('#legs').addEventListener('click', e => { const b = e.target.closest('[data-unslip]'); if (b) { state.slip = state.slip.filter(id => id !== b.dataset.unslip); render(); } });
-document.querySelectorAll('.seg button').forEach(b => b.addEventListener('click', () => { state.mode = b.dataset.mode; render(); }));
-$('#stake').addEventListener('input', e => { state.stake = Number(e.target.value); renderSlip(); persist(); });
-$('#clearSlip').addEventListener('click', () => { state.slip = []; render(); });
-
-function staleTag(p) {
-  if (!p.line_gap) return '';
-  const good = (p.side === 'MORE') === (p.line_gap > 0);
-  return ` <span class="${good ? 'pos' : 'neg'}" title="Books' line ${p.book_line} vs PrizePicks ${p.line}">· books ${p.line_gap > 0 ? '+' : ''}${p.line_gap}</span>`;
-}
-function entryTag(p) {
-  const e = state.daily && state.daily.entry;
-  return e && e.play && e.ids.includes(p.id) ? ' <span style="color:var(--accent)">· in suggested entry</span>' : '';
-}
-
-/* ── Line changed / pulled ── */
-function lineTools(p) {
-  if (!state.daily || !state.daily.board) return '';
-  const lv = state.live[p.id];
-  if (todaysResult(p.id) || (lv && (lv.state === 'in' || lv.state === 'post'))) return '';   // game already started
-  if (state.editing !== p.id) {
-    return `<div class="line-tools">${p.line_moved_from != null ? `<span style="color:var(--muted)">Line moved from ${p.line_moved_from} · </span>` : ''}<button class="link" data-edit="${esc(p.id)}">Line changed on PrizePicks?</button></div>`;
-  }
-  return `<div class="line-tools"><div class="line-form">
-      <span style="color:var(--muted)">New line</span>
-      <input class="num" type="number" step="0.5" min="0" value="${p.line}" data-newline="${esc(p.id)}">
-      <button class="btn btn-primary" data-update="${esc(p.id)}">Update</button>
-      <button class="btn" data-pulled="${esc(p.id)}">Line pulled</button>
-      <button class="link" data-cancel>Cancel</button></div>
-    <div style="color:var(--faint);margin-top:4px">Re-priced from this morning's saved odds. No credits used.</div></div>`;
-}
-async function lineToolsClick(e) {
-  e.stopPropagation();
-  const t = e.target;
-  if (t.dataset.edit) { state.editing = t.dataset.edit; render(); return; }
-  if (t.hasAttribute('data-cancel')) { state.editing = null; render(); return; }
-  const id = t.dataset.update || t.dataset.pulled;
-  if (!id) return;
-  const body = t.dataset.pulled ? { id, pulled: true } : { id, line: document.querySelector(`[data-newline="${CSS.escape(id)}"]`).value };
-  t.disabled = true; t.innerHTML = '<span class="spinner"></span>';
-  try {
-    const r = await fetch('/api/line', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }).then(x => x.json());
-    if (r.error) { state.lineMsg = r.error; }
-    else {
-      state.daily = r.daily; state.lineMsg = r.message; state.editing = null;
-      const en = r.daily.entry;
-      state.slip = en && en.play ? en.ids.slice() : [];
-      if (en && en.kind) state.mode = en.kind;
-    }
-  } catch (err) { state.lineMsg = 'Could not reach the app.'; }
-  render();
-}
-
-/* ── Phone access ── */
-const onThisMac = ['127.0.0.1', 'localhost'].includes(location.hostname);
-if (onThisMac) $('#phoneBtn').hidden = false;
+/* ───────── Phone access (Mac version only) ───────── */
+if (['127.0.0.1', 'localhost'].includes(location.hostname) && !window.CLOUD_META) $('#phoneBtn').hidden = false;
 $('#phoneBtn').addEventListener('click', async () => {
   const r = await fetch('/api/phone').then(x => x.json()).catch(() => null);
   if (!r || r.error) return;
-  const m = document.createElement('div');
-  m.className = 'modal';
-  m.innerHTML = `<div class="panel">
-    <h3>Open on your phone</h3>
-    <p>Point your iPhone camera at this code, or open the link below. It's private to you: the key in the link is checked once, then remembered.</p>
-    ${r.qr ? `<div class="qr">${r.qr}</div>` : ''}
-    <code>${esc(r.url)}</code>
-    <ul style="padding-left:18px;margin:12px 0 0">
-      <li>Your phone must be on the same Wi-Fi as this Mac.</li>
-      <li>This Mac must be awake. ${r.background ? 'The app runs in the background, so no window needs to stay open.' : ''}</li>
-      <li>In Safari, tap Share, then <b>Add to Home Screen</b> for an app icon.</li>
-    </ul>
+  const m = document.createElement('div'); m.className = 'modal';
+  m.innerHTML = `<div class="card"><h3>Open on your phone</h3>
+    <p>Point your iPhone camera at this code, or open the link. The key in the link is checked once, then remembered.</p>
+    ${r.qr ? `<div class="qr">${r.qr}</div>` : ''}<code>${esc(r.url)}</code>
+    <ul style="padding-left:18px;margin:12px 0 0"><li>Same Wi-Fi as this Mac, and the Mac must be awake.</li></ul>
     <div style="text-align:right;margin-top:14px"><button class="btn" data-close>Done</button></div></div>`;
   m.addEventListener('click', ev => { if (ev.target === m || ev.target.hasAttribute('data-close')) m.remove(); });
   document.body.appendChild(m);
 });
 
-/* ── Live in-game tracking ── */
-function legStatus(p, lv) {
-  if (!lv || lv.value == null) return '';
-  return (p.side === 'MORE') === (lv.value > p.line) ? 'pos' : (lv.state === 'post' ? 'neg' : '');
-}
-function liveStrip(p, lv) {
-  if (!lv || lv.state === 'pre' || lv.state === 'unknown') return '';
-  const final = lv.state === 'post';
-  const clock = `<span class="clock"><span class="dot"></span>${final ? 'Final' : 'Live · ' + esc(lv.detail)}</span>`;
-  if (lv.value == null) return `<div class="live ${final ? 'final' : ''}">${clock}<span style="color:var(--muted)">${esc(lv.note || '')}</span><span></span></div>`;
-  const v = lv.value, line = p.line, more = p.side === 'MORE';
-  const scale = Math.max(line * 1.5, v, 1);
-  const over = v > line;
-  let msg, cls;
-  if (more) {
-    const need = Math.floor(line) + 1 - v;
-    [msg, cls] = over ? ['Cleared', 'pos'] : [final ? 'Missed' : `Needs ${need} more`, final ? 'neg' : ''];
-  } else {
-    [msg, cls] = over ? [final ? 'Missed' : 'Over the line', 'neg'] : [final ? 'Stayed under' : `${(line - v).toFixed(1)} under`, final ? 'pos' : ''];
-  }
-  const barColor = over === more ? 'var(--pos)' : over ? 'var(--neg)' : 'var(--accent)';
-  const pace = lv.pace != null && !final ? `<small>pace ${lv.pace}</small>` : '';
-  return `<div class="live ${final ? 'final' : ''}">${clock}
-    <div class="bar" title="${v} of ${line}"><span style="width:${Math.min(v / scale, 1) * 100}%;background:${barColor}"></span><i style="left:${line / scale * 100}%"></i></div>
-    <span class="now num"><b>${v}</b><small>/ ${line}</small><small class="${cls}" style="font-weight:600">${msg}</small>${pace}</span></div>`;
-}
-let liveTimer;
-async function loadLive() {
-  clearTimeout(liveTimer);
-  let next = 5 * 60 * 1000;
-  try {
-    state.live = await fetch('/api/live').then(r => r.json());
-    const states = Object.values(state.live).map(l => l.state);
-    if (states.includes('in')) next = 30 * 1000;                    // games on: refresh every 30s
-    if (Object.values(state.live).some(l => l.state === 'post') && state.history) loadHistory();
-    render();
-  } catch (e) {}
-  liveTimer = setTimeout(loadLive, next);
-}
-
-/* ── Record ── */
-// Results are keyed by slip date: the same player and prop can appear on different days.
-const todaysResult = id => state.daily && state.results[`${state.daily.date}|${id}`];
-function resultTag(r) {
-  if (!r || !r.result) return '';
-  const label = { hit: 'HIT', miss: 'MISS', push: 'PUSH', void: 'VOID' }[r.result];
-  const tip = r.result === 'void' ? ' title="No stat line: did not play"' : '';
-  return `<span class="res ${r.result}"${tip}>${label}${r.actual != null ? ' ' + r.actual : ''}</span>`;
-}
-async function loadHistory() {
-  try {
-    const h = await fetch('/api/history').then(r => r.json());
-    state.history = h;
-    state.results = {};
-    h.days.forEach(d => d.picks.forEach(p => { if (p.result) state.results[`${d.date}|${p.id}`] = p; }));
-    render();
-  } catch (e) {}
-}
-function renderRecord() {
-  const el = $('#recordView'), h = state.history;
-  if (!h) { el.innerHTML = '<div class="panel empty"><span class="spinner"></span>&nbsp; Checking results…</div>'; return; }
-  const s = h.summary;
-  const plStr = v => (v >= 0 ? '+' : '-') + money(Math.abs(v));
-  const plCls = v => v > 0 ? 'pos' : v < 0 ? 'neg' : '';
-  const leagues = Object.entries(s.by_sport).filter(([, v]) => v.hit + v.miss)
-    .map(([k, v]) => `${leagueLabel(k)} ${v.hit}-${v.miss}`).join(' · ');
-  const extras = [s.push ? `${s.push} push` : '', s.void ? `${s.void} void` : '', s.pending ? `${s.pending} pending` : '']
-    .filter(Boolean).join(' · ');
-  let html = `<div class="section-head"><div><h2>Record</h2><p>Every daily pick, graded from ESPN box scores once the game ends.</p></div></div>
-    <dl class="summary num">
-      <div class="panel"><dt>Picks</dt><dd>${s.hit}-${s.miss}</dd><small>${extras || 'wins - losses'}</small></div>
-      <div class="panel"><dt>Hit rate</dt><dd>${s.hit_rate == null ? '—' : pct(s.hit_rate)}</dd><small>${esc(leagues) || 'no graded picks yet'}</small></div>
-      <div class="panel"><dt>Slips</dt><dd>${s.slips_cashed} of ${s.slips}</dd><small>suggested slips that paid${s.sat_out ? ` · ${s.sat_out} day${s.sat_out === 1 ? '' : 's'} sat out` : ''}</small></div>
-      <div class="panel"><dt>Slip P/L</dt><dd class="${plCls(s.slip_pl)}">${s.slips ? plStr(s.slip_pl) : '—'}</dd><small>at $${s.stake} per slip</small></div>
-    </dl>`;
-  html += learningPanel(h.model);
-  if (!h.days.length) html += '<div class="panel empty"><strong>No slips saved yet</strong>Your first daily slip will show up here.</div>';
-  html += h.days.map(d => {
-    const graded = d.picks.filter(p => p.result).length;
-    const hits = d.picks.filter(p => p.result === 'hit').length;
-    const decided = d.picks.filter(p => p.result === 'hit' || p.result === 'miss').length;
-    const label = new Date(d.date + 'T12:00').toLocaleDateString([], { weekday: 'short', month: 'short', day: 'numeric' });
-    const status = d.slip && d.slip.sat_out
-      ? `${hits} of ${decided} picks hit · <b>Sat out</b> (no +EV entry)`
-      : d.slip
-      ? `${hits} of ${decided} hit · ${d.slip.type} · <b class="${plCls(d.slip.pl)}">${plStr(d.slip.pl)}</b>`
-      : `${hits} of ${decided} hit so far · ${d.picks.length - graded} pending`;
-    const rows = d.picks.map(p => `<tr>
-        <td>${esc(p.player)}<div class="hide-sm" style="color:var(--faint);font-size:11.5px">${esc(leagueLabel(p.sport))}${p.commence ? ' · ' + fmtTime(p.commence) : ''}</div></td>
-        <td class="hide-sm">${esc(p.prop)}</td><td class="r">${p.line}</td>
-        <td><span class="${p.side === 'MORE' ? 'pos' : 'neg'}" style="font-weight:600;font-size:12px">${p.side}</span></td>
-        <td class="r">${p.actual ?? (state.live[p.id] && state.live[p.id].value != null ? state.live[p.id].value : '—')}</td>
-        <td class="r">${p.result ? resultTag({ result: p.result })
-          : state.live[p.id] && state.live[p.id].state === 'in' ? `<span class="live-chip">LIVE · ${esc(state.live[p.id].detail)}</span>`
-          : '<span class="res pending">PENDING</span>'}</td></tr>`).join('');
-    return `<div class="panel day">
-      <div class="day-head"><h3>Slip from ${label}</h3><span class="num">${status}</span></div>
-      <table class="results num"><thead><tr><th>Player</th><th class="hide-sm">Prop</th><th class="r">Line</th><th>Pick</th><th class="r">Actual</th><th class="r">Result</th></tr></thead>
-      <tbody>${rows}</tbody></table></div>`;
-  }).join('');
-  html += `<p class="footnote">Slip P/L assumes you played each day's suggested entry at $${s.stake}, and $0 on days it said to sit out. A player with no stat line (did not play) is voided and drops out of the slip, as on PrizePicks. Results are checked whenever you open the app and each morning before the new scan.</p>`;
-  el.innerHTML = html;
-}
-function groupLabel(key) {
-  const [kind, val] = key.split(/:(.*)/s);
-  if (kind === 'sport') return leagueLabel(val);
-  if (kind === 'side') return `All ${val} picks`;
-  if (kind === 'tier') return val === 'none' ? 'No matchup data' : `${val} matchups`;
-  const [sport, prop, side] = val.split('|');
-  return `${leagueLabel(sport)} ${prop} ${side}`;
-}
-function learningPanel(m) {
-  if (!m) return '';
-  const pp = v => (v >= 0 ? '+' : '-') + Math.abs(v * 100).toFixed(1) + ' pts';
-  const head = m.active
-    ? `<h3>What the picker has learned</h3><p>Learning from ${m.n} graded lines. Adjustments are capped and shrink toward the default when evidence is thin.</p>`
-    : `<h3>Learning from results</h3>
-       <p>${m.n} of ${m.learn_min} graded lines collected. The picker grades every line it scans (about 40 to 70 a day), not just your 5 picks. Until it has ${m.learn_min}, it keeps the default blend, because in testing, adjusting on fewer lines hurt about as often as it helped.</p>
-       <div class="progress"><span style="width:${Math.min(m.n / m.learn_min, 1) * 100}%"></span></div>`;
-  const changes = [];
-  if (m.active) {
-    changes.push(`<tr><td>Book odds vs. hit-rate blend</td><td class="r">${Math.round(m.market_weight * 100)} / ${Math.round((1 - m.market_weight) * 100)}</td><td class="r" style="color:var(--faint)">was 75 / 25</td></tr>`);
-    if (m.bias) changes.push(`<tr><td>Overall calibration</td><td class="r ${m.bias > 0 ? 'pos' : 'neg'}">${pp(m.bias)}</td><td class="r" style="color:var(--faint)">${m.bias < 0 ? 'was overconfident' : 'was too cautious'}</td></tr>`);
-    Object.entries(m.segments).sort((a, b) => Math.abs(b[1]) - Math.abs(a[1])).slice(0, 6).forEach(([k, v]) => {
-      const g = m.groups.find(x => x.key === k);
-      changes.push(`<tr><td>${esc(groupLabel(k))}</td><td class="r ${v > 0 ? 'pos' : 'neg'}">${pp(v)}</td><td class="r" style="color:var(--faint)">${g ? `${Math.round(g.actual * 100)}% hit vs ${Math.round(g.expected * 100)}% expected (${g.n})` : ''}</td></tr>`);
-    });
-  }
-  const calib = (m.calibration || []).map(b => `<tr><td>${Math.round(b.range[0] * 100) || '<'}${b.range[0] ? '–' : ''}${Math.round(b.range[1] * 100)}%</td>
-      <td class="r">${(b.expected * 100).toFixed(1)}%</td><td class="r ${b.actual >= b.expected ? 'pos' : 'neg'}">${(b.actual * 100).toFixed(1)}%</td><td class="r" style="color:var(--faint)">${b.n}</td></tr>`).join('');
-  return `<div class="panel learn">${head}
-    <div class="learn-grid">
-      <div><table class="num"><thead><tr><th>Adjustment</th><th class="r">Now</th><th class="r"></th></tr></thead>
-        <tbody>${changes.join('') || `<tr><td colspan="3" style="color:var(--faint)">${m.active ? 'No group has strayed far enough from its estimate to adjust.' : 'None yet. Using the default 75 / 25 blend.'}</td></tr>`}</tbody></table></div>
-      <div><table class="num"><thead><tr><th>Estimated win</th><th class="r">Expected</th><th class="r">Actual</th><th class="r">Lines</th></tr></thead>
-        <tbody>${calib || '<tr><td colspan="4" style="color:var(--faint)">No graded lines yet.</td></tr>'}</tbody></table></div>
-    </div></div>`;
-}
-$('#tabs').addEventListener('click', e => {
-  const b = e.target.closest('[data-view]'); if (!b) return;
-  state.view = b.dataset.view; render();
-  if (state.view === 'record') loadHistory();
-});
-
 function render() {
-  const rec = state.view === 'record';
-  document.querySelectorAll('#tabs button').forEach(b => b.classList.toggle('on', b.dataset.view === state.view));
-  $('#todayView').hidden = rec; $('#recordView').hidden = !rec;
-  document.querySelector('.side').style.visibility = rec ? 'hidden' : '';
-  renderStatus(); renderFilters(); renderDaily(); renderSlip();
-  if (rec) renderRecord();
+  renderHeader();
+  if (state.view === 'today') renderToday();
+  if (state.view === 'slip') renderSlipView();
+  if (state.view === 'record') renderRecord();
   persist();
 }
 fillLeagues(); render(); loadDaily(false); loadHistory(); loadLive();
-setInterval(loadHistory, 10 * 60 * 1000);   // pick up results while the page stays open
+setInterval(loadHistory, 10 * 60 * 1000);
 </script>
 </body>
 </html>

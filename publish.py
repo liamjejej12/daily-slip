@@ -83,7 +83,7 @@ def page_meta():
 def build_page():
     """docs/index.html = the same page the Mac app serves, plus cloud.js, which stands in for the server."""
     import sports_app as sa
-    config = {"budget": sa.DAILY_CREDIT_BUDGET, "min_ev": sa.MIN_ENTRY_EV,
+    config = {"budget": sa.DAILY_CREDIT_BUDGET, "min_ev": sa.MIN_ENTRY_EV, "shrink": sa.ENTRY_SHRINK, "max_power_legs": sa.MAX_POWER_LEGS,
               "leagues": [{"key": s["key"], "label": s["label"], "group": s["group"], "props": list(s["props"])}
                           for s in sa.SPORT_BY_KEY.values()]}
     page = sa.PAGE.replace("__CONFIG__", json.dumps(config))
