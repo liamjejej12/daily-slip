@@ -49,7 +49,9 @@ jobs:
           MODE="${{ github.event.inputs.mode }}"
           HOUR=$(date +%H)
           if [ -z "$MODE" ]; then
-            if [ "$HOUR" -ge 10 ] && [ "$HOUR" -le 16 ]; then MODE=scan; else MODE=grade; fi
+            # Scan 11 AM-1 PM or 3-5 PM Eastern (allows for GitHub running late); grade otherwise
+            H=$((10#$HOUR))
+            if { [ $H -ge 11 ] && [ $H -le 13 ]; } || { [ $H -ge 15 ] && [ $H -le 17 ]; }; then MODE=scan; else MODE=grade; fi
           fi
           python sports_app.py --$MODE
 
