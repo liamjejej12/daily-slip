@@ -633,7 +633,7 @@ function fit(ctx, text, max) { let t = String(text); while (ctx.measureText(t).w
 async function drawSlipImage() {
   const legs = state.slip.map(findPick).filter(Boolean);
   const n = legs.length, table = payTable(state.mode, n);
-  const W = 1080, rowH = 132, H = 490 + n * (rowH + 16) + 20 + 150 + 110;
+  const W = 1080, rowH = 132, H = 230 + n * (rowH + 16) + 90;
   const c = document.createElement('canvas'); c.width = W; c.height = H;
   const ctx = c.getContext('2d');
   try { await document.fonts.ready; } catch (e) {}
@@ -655,21 +655,8 @@ async function drawSlipImage() {
   ctx.fillStyle = '#8b94a7'; ctx.font = F(500, 28);
   ctx.fillText(new Date().toLocaleDateString([], { weekday: 'long', month: 'long', day: 'numeric' }), lx + L + 26, ly + 86);
 
-  // entry title
-  const label = `${n}-PICK ${state.mode === 'power' ? 'POWER' : 'FLEX'}`;
-  ctx.font = F(800, 26); ctx.fillStyle = '#8fb3ff'; ctx.fillText('MY ENTRY', 72, 268);
-  const tg = ctx.createLinearGradient(72, 0, 72 + 700, 0); tg.addColorStop(0, '#ffffff'); tg.addColorStop(1, '#b9cdfd');
-  ctx.font = F(800, 92); ctx.fillStyle = tg; ctx.fillText(label, 68, 360);
-  if (table) {
-    const top = Math.max(...Object.values(table));
-    const pill = `${top}× PAYOUT`; ctx.font = F(800, 28); const pw = ctx.measureText(pill).width + 40;
-    const pg = ctx.createLinearGradient(72, 0, 72 + pw, 0); pg.addColorStop(0, '#8fb3ff'); pg.addColorStop(1, '#3ecf8e');
-    rr(ctx, 72, 392, pw, 54, 27); ctx.fillStyle = pg; ctx.fill();
-    ctx.fillStyle = '#0a0f1d'; ctx.fillText(pill, 92, 429);
-  }
-
   // legs
-  let y = 490;
+  let y = 230;
   for (const l of legs) {
     const res = todaysResult(l.id), lv = state.live[l.id];
     rr(ctx, 56, y, W - 112, rowH, 26); ctx.fillStyle = 'rgba(15,22,39,0.92)'; ctx.fill();
@@ -692,22 +679,8 @@ async function drawSlipImage() {
     y += rowH + 16;
   }
 
-  // footer stats
-  y += 20;
-  rr(ctx, 56, y, W - 112, 150, 26); ctx.fillStyle = 'rgba(10,15,29,0.75)'; ctx.fill(); ctx.strokeStyle = 'rgba(148,163,184,0.18)'; ctx.lineWidth = 2; ctx.stroke();
-  const cols = [['STAKE', '$' + state.stake], ['TO WIN', table ? money(state.stake * Math.max(...Object.values(table))) : '—']];
-  if (table && legs.every(l => l.prob != null)) {
-    const dist = distribution(legs.map(l => cautious(l.prob)));
-    cols.push(['CHANCE TO CASH', pct0(Object.keys(table).map(Number).filter(h => table[h] > 1).reduce((s, h) => s + dist[h], 0))]);
-  }
-  const cw = (W - 112) / cols.length;
-  cols.forEach(([k, v], i) => {
-    const x = 56 + i * cw + 40;
-    ctx.fillStyle = '#5c6578'; ctx.font = F(700, 22); ctx.fillText(k, x, y + 56);
-    ctx.fillStyle = i === 1 ? '#3ecf8e' : '#e6e9ef'; ctx.font = F(800, 46); ctx.fillText(v, x, y + 112);
-  });
   ctx.fillStyle = '#5c6578'; ctx.font = F(500, 22);
-  ctx.fillText('Made with Daily Slip · estimates, not guarantees', 72, H - 50);
+  ctx.fillText('Made with Daily Slip', 72, H - 44);
   return c;
 }
 async function shareSlip() {
