@@ -471,6 +471,14 @@
       const adj = (model.bias || 0) + segmentKeys(c).reduce((t, k) => t + ((model.segments || {})[k] || 0), 0);
       p += Math.max(-META.max_total_adj, Math.min(META.max_total_adj, adj));
     }
+    // game context: learned effect where there's enough data, starting guess otherwise (as in sports_app.py)
+    const learnedCtx = model.active ? (model.ctx_learned || {}) : {};
+    let ctxAdj = 0;
+    for (const f of ((c.ctx || {}).flags || [])) {
+      const k = `ctx:${f}|${c.side}`;
+      ctxAdj += k in learnedCtx ? learnedCtx[k] : ((META.ctx_defaults[f] || [0, 0])[c.side === 'MORE' ? 0 : 1]);
+    }
+    p += Math.max(-META.ctx_cap, Math.min(META.ctx_cap, ctxAdj));
     return Math.min(Math.max(p, 0.01), 0.99);
   }
   function entryEv(probs, kind) {
@@ -504,7 +512,9 @@
   async function rebuildPicks(d, reports) {
     const existing = {};
     for (const p of d.picks || []) existing[`${p.sport}|${p.player}|${p.prop}`] = p;
-    const pool = d.board.filter(b => !b.injury && !b.pulled && b.final_p >= 0.5).sort((a, b) => b.final_p - a.final_p);
+    const cold = new Set(((data.view || {}).areas || []).filter(a => a.cold).map(a => a.key));
+    const pool = d.board.filter(b => !b.injury && !b.pulled && b.final_p >= 0.5 && !cold.has(`${b.sport}|${b.prop}|${b.side}`))
+      .sort((a, b) => b.final_p - a.final_p);
     const picks = [], players = new Set(), perGame = {}, cap = maxPerGame();
     for (const b of pool) {
       if (players.has(b.player) || (perGame[b.game] || 0) >= cap) continue;

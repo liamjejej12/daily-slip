@@ -430,7 +430,8 @@ MARKET_WEIGHT       = 0.75   # de-vigged sportsbook odds lead...
 HISTORY_WEIGHT      = 0.25   # ...ESPN hit rate adjusts
 # Up to 10 bookmakers per request cost the same as one, so price against 9 books + PrizePicks.
 REF_BOOKS           = ["pinnacle", "draftkings", "fanduel", "betmgm", "williamhill_us", "espnbet",
-                       "betrivers", "fanatics", "bovada"]
+                       "betrivers", "fanatics", "underdog"]
+DFS_COMPARE         = {"underdog"}                # pick'em apps: compared line-for-line, never used as odds
 FALLBACK_BOOKS      = ["draftkings", "fanduel"]   # used if the 10-book request ever costs extra
 BOOK_WEIGHT         = {"pinnacle": 2.0}           # the sharpest book counts double
 MAX_LINE_GAP        = (1.0, 0.12)                 # price a different book line up to max(1.0, 12% of the line) away
@@ -441,7 +442,7 @@ PROP_CV             = {"Points": 0.30, "Pts+Rebs+Asts": 0.25, "Pts+Rebs": 0.28, 
 SAFE_INJURY_STATUS  = {"active", "probable"}
 PP_BOOK             = "prizepicks"
 BOOK_ABBR           = {"pinnacle": "PIN", "draftkings": "DK", "fanduel": "FD", "betmgm": "MGM",
-                       "williamhill_us": "CZR", "espnbet": "ESPN", "betrivers": "BR", "fanatics": "FAN", "bovada": "BOV"}
+                       "williamhill_us": "CZR", "espnbet": "ESPN", "betrivers": "BR", "fanatics": "FAN", "underdog": "UD"}
 
 BASKETBALL_MARKETS = [("player_points", "Points"), ("player_rebounds", "Rebounds"), ("player_assists", "Assists")]
 FOOTBALL_MARKETS = [("player_pass_yds", "Pass Yards"), ("player_reception_yds", "Receiving Yards"),
@@ -492,8 +493,19 @@ def implied_prob(american):
 
 
 def fair_over(over_odds, under_odds):
+    """Strip the juice with the power method: find k so that p_over^k + p_under^k = 1.
+    It handles lopsided prices (heavy favorites) more accurately than scaling both sides equally."""
     p_over, p_under = implied_prob(over_odds), implied_prob(under_odds)
-    return p_over / (p_over + p_under)          # strip the juice
+    if p_over + p_under <= 1:
+        return p_over / (p_over + p_under)
+    lo, hi = 1.0, 3.0
+    for _ in range(40):
+        k = (lo + hi) / 2
+        if p_over ** k + p_under ** k > 1:
+            lo = k
+        else:
+            hi = k
+    return p_over ** ((lo + hi) / 2)
 
 
 def poisson_sf(k, lam):
@@ -528,7 +540,7 @@ def lines_from_event(data, sport, prop_names):
     """Price every PrizePicks line against a weighted consensus of the books.
     Books hanging a different number (PrizePicks slow to move) are converted to the PrizePicks line."""
     game = f"{data.get('away_team', '?')} @ {data.get('home_team', '?')}"
-    pp, quotes = {}, {}
+    pp, quotes, ud = {}, {}, {}
     for bm in data.get("bookmakers", []):
         for mk in bm.get("markets", []):
             prop = prop_names.get(mk.get("key"))
@@ -541,6 +553,8 @@ def lines_from_event(data, sport, prop_names):
                 key = (player, prop)
                 if bm["key"] == PP_BOOK:
                     pp.setdefault(key, set()).add(float(point))
+                elif bm["key"] in DFS_COMPARE:
+                    ud.setdefault(key, set()).add(float(point))
                 elif o.get("price") is not None:
                     quotes.setdefault(key, {}).setdefault(bm["key"], {}).setdefault(float(point), {})[side] = o["price"]
 
@@ -576,7 +590,8 @@ def lines_from_event(data, sport, prop_names):
                     "commence": data.get("commence_time"), "side": "MORE" if p_over >= 0.5 else "LESS",
                     "market_p": max(p_over, 1 - p_over), "n_books": len(used),
                     "books": shown + (f" +{len(used) - 3} more" if len(used) > 3 else ""),
-                    "book_line": book_line, "line_gap": round(book_line - target, 1), "on_pp": key in pp})
+                    "book_line": book_line, "line_gap": round(book_line - target, 1), "on_pp": key in pp,
+                    "ud_line": next(iter(ud[key])) if len(ud.get(key, ())) == 1 else None})
     return out, bool(pp)
 
 
@@ -642,6 +657,161 @@ def best_entry(picks):
     best["play"] = best["ev"] >= MIN_ENTRY_EV
     best["label"] = f"{best['legs']}-pick {'Power' if best['kind'] == 'power' else 'Flex'}"
     return best
+
+
+# Game context: starting guesses (MORE, LESS) in win-probability points until learning has enough data
+CTX_DEFAULTS   = {"blowout": (-0.015, 0.010), "b2b": (-0.010, 0.005), "minutes_down": (-0.015, 0.010),
+                  "minutes_up": (0.010, -0.010), "high_total": (0.005, -0.005), "low_total": (-0.005, 0.005),
+                  "windy": (-0.020, 0.015), "returning": (-0.015, 0.010)}
+CTX_CAP        = 0.03          # context can move an estimate at most 3 points
+CTX_LABELS     = {"blowout": "blowout risk", "b2b": "2nd night of a back-to-back", "minutes_down": "minutes trending down",
+                  "minutes_up": "minutes trending up", "high_total": "high-scoring game expected",
+                  "low_total": "low-scoring game expected", "windy": "windy", "returning": "back from a long absence"}
+BLOWOUT_SPREAD = {"NBA": 10, "WNBA": 10, "NCAAB": 15, "NFL": 10, "NCAAF": 17}
+TOTAL_BANDS    = {"NBA": (215, 235), "WNBA": (155, 170), "NCAAB": (130, 155), "NFL": (40, 50), "NCAAF": (45, 60),
+                  "NHL": (5.5, 6.5)}
+WIND_PROPS     = {"Pass Yards", "Pass TDs", "Pass Attempts", "Completions", "Receiving Yards", "Receptions", "Rush+Rec Yards"}
+WIND_MPH       = 15
+
+
+def kickoff_weather(venue, commence):
+    """Wind (mph) and rain (mm) at an outdoor stadium around kickoff, from Open-Meteo (free, no key)."""
+    addr = venue.get("address") or {}
+    if not addr.get("city"):
+        return None
+    try:
+        geo = get_json("https://geocoding-api.open-meteo.com/v1/search", _ttl=86400, name=addr["city"], count=5, country="US")
+        places = geo.get("results") or []
+        place = next((x for x in places if addr.get("state") and addr["state"] in (x.get("admin1", ""), x.get("admin1_code", ""))), places[0] if places else None)
+        if not place:
+            return None
+        wx = get_json("https://api.open-meteo.com/v1/forecast", _ttl=3600, latitude=place["latitude"], longitude=place["longitude"],
+                      hourly="wind_speed_10m,precipitation", wind_speed_unit="mph", timezone="UTC", forecast_days=7)
+        hours = wx["hourly"]["time"]
+        target = parse_date(commence).strftime("%Y-%m-%dT%H:00")
+        i = hours.index(target) if target in hours else None
+        if i is None:
+            return None
+        return {"wind": round(wx["hourly"]["wind_speed_10m"][i]), "precip": wx["hourly"]["precipitation"][i]}
+    except (requests.RequestException, KeyError, ValueError, IndexError, TypeError):
+        return None
+
+
+def minutes_values(games, group):
+    out = []
+    for g in games:
+        try:
+            if group == "basketball":
+                out.append(float(g["row"]["minutes"]))
+            elif group == "hockey":
+                m, _, sec = g["row"]["timeOnIcePerGame"].partition(":")
+                out.append(int(m) + int(sec or 0) / 60)
+        except (KeyError, ValueError, TypeError, AttributeError):
+            pass
+    return out
+
+
+def game_context(c, rep):
+    """Spread, total, rest, minutes trend and (outdoor football) wind for one line. ESPN + Open-Meteo, free."""
+    ctx = {"flags": []}
+    key, sport = c["sport"], SPORT_BY_KEY[c["sport"]]
+    pid = ((rep or {}).get("player") or {}).get("id")
+    try:
+        e = find_event(key, {"commence": c.get("commence"), "espn_id": pid, "game": c.get("game", "")})
+    except (requests.RequestException, ValueError, KeyError):
+        e = None
+    if e:
+        comp = e["competitions"][0]
+        odds = (comp.get("odds") or [{}])[0]
+        total, spread = odds.get("overUnder"), odds.get("spread")
+        if total and key in TOTAL_BANDS:
+            ctx["total"] = total
+            lo, hi = TOTAL_BANDS[key]
+            if total >= hi:
+                ctx["flags"].append("high_total")
+            elif total <= lo:
+                ctx["flags"].append("low_total")
+        if spread is not None and key in BLOWOUT_SPREAD:
+            ctx["spread"] = abs(spread)
+            if abs(spread) >= BLOWOUT_SPREAD[key]:
+                ctx["flags"].append("blowout")
+        venue = comp.get("venue") or {}
+        if sport["group"] == "football" and venue.get("indoor") is False and c["prop"] in WIND_PROPS:
+            w = kickoff_weather(venue, c["commence"])
+            if w:
+                ctx["wind"], ctx["precip"] = w["wind"], w["precip"]
+                if w["wind"] >= WIND_MPH:
+                    ctx["flags"].append("windy")
+    if pid:
+        try:
+            games, _ = game_log(sport, pid)
+        except (requests.RequestException, ValueError):
+            games = []
+        if games and c.get("commence"):
+            try:
+                rest = (parse_date(c["commence"]).astimezone().date() - parse_date(games[0]["date"]).astimezone().date()).days
+                ctx["rest_days"] = rest
+                if rest == 1 and sport["group"] in ("basketball", "hockey"):
+                    ctx["flags"].append("b2b")
+                elif rest >= 14 and sport["group"] != "football":    # returning players often have a minutes limit
+                    ctx["flags"].append("returning")
+            except ValueError:
+                pass
+        mins = minutes_values(games, sport["group"])
+        if len(mins) >= 8:
+            trend = (sum(mins[:5]) / 5) / (sum(mins) / len(mins))
+            ctx["minutes_trend"] = round(trend, 2)
+            if trend <= 0.85:
+                ctx["flags"].append("minutes_down")
+            elif trend >= 1.15:
+                ctx["flags"].append("minutes_up")
+    return ctx
+
+
+def context_adjust(c, model):
+    """Context nudge for a line: learned effects where there's enough data, starting guesses otherwise."""
+    learned = (model or {}).get("ctx_learned", {}) if (model or {}).get("active") else {}
+    total = 0.0
+    for f in (c.get("ctx") or {}).get("flags", []):
+        k = f"ctx:{f}|{c['side']}"
+        total += learned[k] if k in learned else CTX_DEFAULTS.get(f, (0, 0))[0 if c["side"] == "MORE" else 1]
+    return max(-CTX_CAP, min(CTX_CAP, total))
+
+
+# ───────── 5. Where the picker wins: league / prop / side areas
+COLD_MIN = 40        # graded lines before an area can be ruled out
+
+
+def area_key(c):
+    return f"{c['sport']}|{c['prop']}|{c['side']}"
+
+
+def graded_rows(h):
+    """Every graded line once per day (board when saved, else the picks)."""
+    rows = []
+    for dk, day in h["days"].items():
+        for r in (day.get("board") or day["picks"]):
+            if r.get("result") in ("hit", "miss") and r.get("final_p") is not None:
+                rows.append({**r, "id": f"{dk}|{r['id']}"})
+    return rows
+
+
+def areas_report(h):
+    groups = {}
+    for r in graded_rows(h):
+        groups.setdefault(area_key(r), []).append(r)
+    out = []
+    for k, rs in groups.items():
+        sport, prop, side = k.split("|")
+        rate = sum(r["result"] == "hit" for r in rs) / len(rs)
+        exp = sum(r["final_p"] for r in rs) / len(rs)
+        out.append({"key": k, "sport": sport, "prop": prop, "side": side, "n": len(rs), "hit_rate": rate, "expected": exp,
+                    "cold": len(rs) >= COLD_MIN and rate < 0.5 and rate < exp - 0.05})
+    return sorted(out, key=lambda a: -a["n"])
+
+
+def cold_areas():
+    return {a["key"] for a in areas_report(load_history()) if a["cold"]}
 
 
 def scan_daily():
@@ -732,24 +902,28 @@ def scan_daily():
         pid = str(((rep or {}).get("player") or {}).get("id", ""))
         status = injuries[c["sport"]].get(pid) or injuries[c["sport"]].get("name:" + normalize(c["player"]))
         c["injury"] = status if status and status.lower() not in SAFE_INJURY_STATUS else None
+        c["ctx"] = game_context(c, rep)
         c["final_p"] = apply_model(c, model)
     board = [{
         "id": f"line|{c['sport']}|{c['player']}|{c['prop']}|{c['line']:g}".lower(),
         "sport": c["sport"], "player": c["player"], "prop": c["prop"], "line": c["line"], "side": c["side"],
         "market_p": c["market_p"], "hist_p": c["hist_p"], "final_p": c["final_p"], "tier": c["tier"],
         "commence": c.get("commence"), "game": c.get("game"), "injury": c["injury"],
-        "book_line": c.get("book_line"), "n_books": c.get("n_books"),
+        "book_line": c.get("book_line"), "n_books": c.get("n_books"), "ctx": c.get("ctx"), "ud_line": c.get("ud_line"),
         "espn_id": ((c.get("report") or {}).get("player") or {}).get("id"),
     } for c in candidates]
 
     # 5. Build the slip: best blended probability, 1 per player, max 2 per game
     candidates.sort(key=lambda c: -c["final_p"])
     picks, players, per_game, game_cap = [], set(), {}, max_per_game()
+    cold = cold_areas()
     for c in candidates:
         if c["final_p"] < 0.5:
             break                      # never fill the slip with a pick it expects to lose
         if c["injury"]:
             continue                   # listed on the injury report: skip
+        if area_key(c) in cold:
+            continue                   # an area with a proven losing record: skip
         if c["player"] in players or per_game.get(c["game"], 0) >= game_cap:
             continue
         picks.append(c)
@@ -771,7 +945,7 @@ def scan_daily():
         "games_scanned": len(games_with_lines), "lines_compared": len(lines),
         "pp_matched": pp_seen, "picks": picks, "locked": len(picks) >= 2,
         "board": board, "model": {"active": model["active"], "market_weight": model["market_weight"]},
-        "entry": entry, "books_used": len(books), "injured_skipped": sum(1 for c in candidates if c["injury"]),
+        "entry": entry, "books_used": len([b for b in books if b not in DFS_COMPARE]), "injured_skipped": sum(1 for c in candidates if c["injury"]),
     }
 
 
@@ -958,6 +1132,7 @@ def apply_model(c, model):
     if model.get("active"):
         adj = model["bias"] + sum(model["segments"].get(k, 0) for k in segment_keys(c))
         p += max(-MAX_TOTAL_ADJ, min(MAX_TOTAL_ADJ, adj))
+    p += context_adjust(c, model)
     return min(max(p, 0.01), 0.99)
 
 
@@ -1065,12 +1240,11 @@ def max_per_game():
 def fit_model(h):
     """Learn from every graded line: blend weight, overall calibration, and group adjustments.
     Every estimate is shrunk toward 'no change' so small samples can't swing the picker."""
-    seen, rows = set(), []
-    for day in h["days"].values():
+    rows = []
+    for dk, day in h["days"].items():
         for r in (day.get("board") or day["picks"]):           # older days have no board: use the picks
-            if r.get("result") in ("hit", "miss") and r.get("market_p") is not None and r["id"] not in seen:
-                seen.add(r["id"])
-                rows.append(r)
+            if r.get("result") in ("hit", "miss") and r.get("market_p") is not None:
+                rows.append({**r, "id": f"{dk}|{r['id']}"})    # same player/prop on another day is a new result
     n = len(rows)
     y = {r["id"]: 1.0 if r["result"] == "hit" else 0.0 for r in rows}
 
@@ -1101,6 +1275,20 @@ def fit_model(h):
                         - sum(segments.get(k2, 0) for k2 in segment_keys(r) if k2 != k) for r in rs)
             segments[k] = clamp(resid / (len(rs) + SEG_STRENGTH))
     segments = {k: round(v, 4) for k, v in segments.items() if abs(v) >= 0.005}
+
+    # Context effects (blowout, back-to-back, minutes, totals, wind): learned on what's left after the rest
+    ctx_groups = {}
+    for r in rows:
+        for f in (r.get("ctx") or {}).get("flags", []):
+            ctx_groups.setdefault(f"ctx:{f}|{r['side']}", []).append(r)
+    ctx_learned, ctx_report = {}, []
+    for k, rs in ctx_groups.items():
+        resid = sum(y[r["id"]] - pred[r["id"]] - bias - sum(segments.get(k2, 0) for k2 in segment_keys(r)) for r in rs)
+        adj = clamp(resid / (len(rs) + SEG_STRENGTH))
+        if len(rs) >= SEG_MIN:
+            ctx_learned[k] = round(adj, 4)
+        ctx_report.append({"key": k, "n": len(rs), "actual": sum(y[r["id"]] for r in rs) / len(rs),
+                           "expected": sum(pred[r["id"]] for r in rs) / len(rs), "adj": ctx_learned.get(k)})
     report = sorted(({"key": k, "n": len(rs), "actual": sum(y[r["id"]] for r in rs) / len(rs),
                       "expected": sum(pred[r["id"]] for r in rs) / len(rs), "adj": segments.get(k, 0.0)}
                      for k, rs in groups.items()), key=lambda g: -g["n"])
@@ -1121,6 +1309,7 @@ def fit_model(h):
         "groups": report[:12], "calibration": buckets,
         "overall": {"expected": sum(pred.values()) / n, "actual": sum(y.values()) / n} if n else None,
         "entry": learn_entries(h), "same_game": learn_same_game(h),
+        "ctx_learned": ctx_learned if active else {}, "ctx_groups": sorted(ctx_report, key=lambda g: -g["n"]),
         "updated": datetime.now().isoformat(timespec="minutes"),
     }
     MODEL_FILE.write_text(json.dumps(model, indent=1))
@@ -1227,8 +1416,9 @@ def rebuild_picks(d, reports=None):
     """Re-pick today's slip from the saved board (after a line moved or was pulled). Free: ESPN only."""
     reports = reports or {}
     existing = {(p["sport"], p["player"], p["prop"]): p for p in d.get("picks", [])}
-    pool = sorted((b for b in d["board"] if not b.get("injury") and not b.get("pulled") and b["final_p"] >= 0.5),
-                  key=lambda b: -b["final_p"])
+    cold = cold_areas()
+    pool = sorted((b for b in d["board"] if not b.get("injury") and not b.get("pulled") and b["final_p"] >= 0.5
+                   and area_key(b) not in cold), key=lambda b: -b["final_p"])
     picks, players, per_game, game_cap = [], set(), {}, max_per_game()
     for b in pool:
         if b["player"] in players or per_game.get(b["game"], 0) >= game_cap:
@@ -1837,7 +2027,7 @@ def api_history():
     for key in sorted(h["days"], reverse=True):
         day = h["days"][key]
         days.append({**day, "slip": slip_result(day["picks"], day.get("entry"))})
-    return jsonify({"days": days, "summary": history_summary(h), "model": fit_model(h)})
+    return jsonify({"days": days, "summary": history_summary(h), "model": fit_model(h), "areas": areas_report(h)})
 
 
 @app.get("/")
@@ -2216,13 +2406,14 @@ const store = {
 const state = {
   daily: null, dailyError: null, dailyErrorTitle: null, noRetry: false, loading: false, nextScan: null,
   researched: store.get('ps_researched', []), slip: store.get('ps_slip', []),
-  mode: store.get('ps_mode', 'flex'), stake: store.get('ps_stake', 10), filter: 'all',
+  mode: store.get('ps_mode', 'flex'), stake: store.get('ps_stake', 10), bankroll: store.get('ps_bankroll', 0), filter: 'all',
   view: 'today', history: null, results: {}, live: {}, editing: null, lineMsg: null, open: null,
   saved: store.get('ps_saved', []), savedLive: {}, recordTab: null, alerts: []
 };
 function persist() {
   store.set('ps_researched', state.researched); store.set('ps_slip', state.slip);
   store.set('ps_mode', state.mode); store.set('ps_stake', state.stake); store.set('ps_saved', state.saved);
+  store.set('ps_bankroll', state.bankroll);
 }
 
 const $ = s => document.querySelector(s);
@@ -2426,19 +2617,38 @@ function heroCard() {
     </dl>
     <div class="actions"><button class="btn btn-primary" data-load-best>Use this slip</button><button class="btn" data-goto="slip">Compare sizes</button></div></div>`;
 }
+const CTX_SHORT = { blowout: 'blowout risk', b2b: 'back-to-back', returning: 'returning', windy: 'windy', minutes_down: 'minutes down', minutes_up: 'minutes up' };
+function contextText(p) {
+  const c = p.ctx || {}, f = c.flags || [], bits = [];
+  if (c.spread != null) bits.push(`spread ${c.spread}${f.includes('blowout') ? ' (blowout risk: starters may sit late)' : ''}`);
+  if (c.total != null) bits.push(`total ${c.total}${f.includes('high_total') ? ' (high scoring)' : f.includes('low_total') ? ' (low scoring)' : ''}`);
+  if (f.includes('b2b')) bits.push('2nd night of a back-to-back');
+  if (f.includes('returning')) bits.push(`first game in ${c.rest_days} days`);
+  if (c.minutes_trend != null && (f.includes('minutes_down') || f.includes('minutes_up')))
+    bits.push(`minutes ${c.minutes_trend > 1 ? 'up' : 'down'} ${Math.round(Math.abs(c.minutes_trend - 1) * 100)}% lately`);
+  if (c.wind != null) bits.push(`wind ${c.wind} mph${c.precip ? `, rain ${c.precip} mm` : ''}`);
+  return bits.length ? 'Game context: ' + bits.join(' · ') : null;
+}
+function underdogText(p) {
+  if (p.ud_line == null || p.ud_line === p.line) return p.ud_line != null ? `Underdog has the same line (${p.ud_line})` : null;
+  const better = p.side === 'MORE' ? p.ud_line < p.line : p.ud_line > p.line;
+  return `Underdog: ${p.ud_line} (${better ? `better for ${p.side} there` : `worse for ${p.side} there`})`;
+}
 function pickRow(p) {
   const r = p.report, inSlip = state.slip.includes(p.id), open = state.open === p.id;
   const m = r && r.matchup, ng = r && r.next_game, lv = state.live[p.id], res = todaysResult(p.id);
   const meta = [leagueLabel(p.sport), r && r.player.team, p.commence ? fmtTime(p.commence) : null].filter(Boolean).join(' · ');
+  const flags = ((p.ctx || {}).flags || []).filter(f => CTX_SHORT[f]).map(f => CTX_SHORT[f]);
   const gap = p.line_gap ? ` · <span class="${(p.side === 'MORE') === (p.line_gap > 0) ? 'pos' : 'neg'}">books ${p.line_gap > 0 ? '+' : ''}${p.line_gap}</span>` : '';
   const why = [p.n_books ? `${p.n_books} book${p.n_books === 1 ? '' : 's'}: ${p.books}` : p.books,
                p.line_gap ? `Books' line ${p.book_line} vs PrizePicks ${p.line}` : null,
-               ng ? `Next ${ng.home ? 'vs' : '@'} ${ng.opp_abbr}${m ? ` · #${m.rank} of ${m.of} in ${m.what}` : ''}` : null].filter(Boolean);
+               ng ? `Next ${ng.home ? 'vs' : '@'} ${ng.opp_abbr}${m ? ` · #${m.rank} of ${m.of} in ${m.what}` : ''}` : null,
+               contextText(p), underdogText(p)].filter(Boolean);
   const live = liveStrip(p, lv);
   return `
   <article class="card pick ${inSlip ? 'in-slip' : ''} ${open ? 'open' : ''}" data-pick="${esc(p.id)}">
     <div class="pick-row" data-toggle-open="${esc(p.id)}">
-      <div style="min-width:0"><div class="name">${esc(p.player)}</div><div class="meta">${esc(meta)}${gap}</div></div>
+      <div style="min-width:0"><div class="name">${esc(p.player)}</div><div class="meta">${esc(meta)}${gap}${flags.length ? ` · <span class="faint">${esc(flags.join(', '))}</span>` : ''}</div></div>
       <div class="line"><div class="p">${esc(p.prop)}</div><div class="v">${p.line}</div></div>
       <div style="text-align:center">${res ? resultTag(res) : `<span class="side ${p.side === 'MORE' ? 'more' : 'less'}">${p.side}</span>`}<div class="est">${pct0(p.final_p)}</div></div>
       <button class="add" data-add-slip="${esc(p.id)}" aria-label="${inSlip ? 'Remove from' : 'Add to'} slip">${inSlip ? '✓' : '+'}</button>
@@ -2633,6 +2843,7 @@ function renderSlipView() {
           <div class="stake-row"><span>Stake</span><b>$${state.stake}</b></div>
           <input id="stake" type="range" min="1" max="200" step="1" value="${state.stake}" aria-label="Stake">
           <div class="payouts">${pay}</div>
+          ${n ? sizingHtml(legs) : ''}
           ${warn ? `<div class="slip-warn">${warn}</div>` : ''}
           <p class="faint" style="font-size:11.5px;margin:10px 0 0">Preview only. Nothing is sent to PrizePicks.</p>
         </div></div>`;
@@ -2641,6 +2852,7 @@ $('#view-slip').addEventListener('click', e => {
   const o = e.target.closest('[data-option]'); if (o) { applyOption(entryOptions()[+o.dataset.option]); return; }
   const u = e.target.closest('[data-unslip]'); if (u) { state.slip = state.slip.filter(id => id !== u.dataset.unslip); render(); return; }
   const m = e.target.closest('[data-mode]'); if (m) { state.mode = m.dataset.mode; render(); return; }
+  const kb = e.target.closest('[data-use-kelly]'); if (kb) { state.stake = +kb.dataset.useKelly; persist(); render(); return; }
   if (e.target.closest('#clearSlip')) { state.slip = []; render(); return; }
   if (e.target.closest('#saveBtn')) {
     const legs = state.slip.map(findPick).filter(Boolean);
@@ -2662,7 +2874,35 @@ $('#view-slip').addEventListener('input', e => {        // live number while dra
 });
 $('#view-slip').addEventListener('change', e => {       // ...payouts when you let go
   if (e.target.id === 'stake') { persist(); renderSlipView(); }
+  if (e.target.id === 'bankroll') { state.bankroll = Math.max(0, Number(e.target.value) || 0); persist(); renderSlipView(); }
 });
+
+/* ───────── Bet sizing: quarter-Kelly, capped ───────── */
+function kellyStake(legs, kind) {
+  const table = payTable(kind, legs.length);
+  if (!table || !state.bankroll || legs.some(l => l.prob == null)) return null;
+  const dist = distribution(legs.map(l => cautious(l.prob)));
+  const outcomes = dist.map((p, h) => [p, (table[h] || 0) - 1]);          // net return per $1 staked
+  let best = 0, bestG = 0;
+  for (let f = 0.001; f <= 0.25; f += 0.001) {
+    const g = outcomes.reduce((t, [p, r]) => t + p * Math.log(Math.max(1e-9, 1 + f * r)), 0);
+    if (g > bestG) { bestG = g; best = f; }
+  }
+  const frac = Math.min(best / 4, 0.03);                                  // a quarter of full Kelly, never over 3%
+  return { frac, stake: Math.round(state.bankroll * frac) };
+}
+function sizingHtml(legs) {
+  const k = kellyStake(legs, state.mode);
+  const field = `<div class="stake-row" style="margin-top:14px;align-items:center"><span>Bankroll</span>
+    <input id="bankroll" type="number" min="0" step="10" inputmode="numeric" value="${state.bankroll || ''}" placeholder="e.g. 500"
+      style="width:110px;background:var(--bg);border:1px solid var(--border-strong);border-radius:8px;padding:5px 8px;text-align:right"></div>`;
+  if (!state.bankroll) return field + `<p class="faint" style="font-size:12px;margin:4px 0 0">Enter your bankroll to get a suggested stake.</p>`;
+  if (!k) return field + `<p class="faint" style="font-size:12px;margin:4px 0 0">Suggested stakes need every leg's win estimate (today's picks have them; researched picks don't).</p>`;
+  if (!k.stake) return field + `<p style="font-size:12.5px;margin:4px 0 0">Suggested stake: <b>$0</b> <span class="faint">(no edge on this slip)</span></p>`;
+  return field + `<p style="font-size:12.5px;margin:4px 0 0">Suggested stake: <b>$${k.stake}</b> <span class="faint">(${(k.frac * 100).toFixed(1)}% of bankroll)</span>
+    <button class="link" data-use-kelly="${Math.min(200, Math.max(1, k.stake))}" style="margin-left:6px">Use</button></p>
+    <p class="faint" style="font-size:11.5px;margin:2px 0 0">Quarter-Kelly sizing, capped at 3% so a cold streak can't sink the bankroll.</p>`;
+}
 
 /* ───────── Share: the slip as a picture ───────── */
 function rr(ctx, x, y, w, h, r) { ctx.beginPath(); ctx.moveTo(x + r, y); ctx.arcTo(x + w, y, x + w, y + h, r); ctx.arcTo(x + w, y + h, x, y + h, r); ctx.arcTo(x, y + h, x, y, r); ctx.arcTo(x, y, x + w, y, r); ctx.closePath(); }
@@ -2953,6 +3193,22 @@ function renderMySlips() {
   return html + `<p class="footnote">Simulated money only, to mirror your real PrizePicks entries. Players who don't play drop out and the payout is recalculated, as on PrizePicks.</p>`;
 }
 
+function areasPanel(areas) {
+  if (!areas || !areas.length) return '';
+  const rows = areas.filter(a => a.n >= 3).slice(0, 12).map(a => `<tr>
+      <td>${esc(leagueLabel(a.sport))} ${esc(a.prop)} <span class="${a.side === 'MORE' ? 'pos' : 'neg'}" style="font-weight:700;font-size:11px">${a.side}</span>
+        ${a.cold ? ' <span class="res miss">SKIPPED</span>' : ''}</td>
+      <td class="r ${a.hit_rate >= a.expected ? 'pos' : 'neg'}">${Math.round(a.hit_rate * 100)}%</td>
+      <td class="r faint">${Math.round(a.expected * 100)}%</td><td class="r faint">${a.n}</td></tr>`).join('');
+  const cold = areas.filter(a => a.cold).length;
+  return `<details class="card fold learn"><summary><div><b>Where it wins</b>
+      <div class="faint" style="font-size:12px">${cold ? `${cold} losing area${cold === 1 ? '' : 's'} now skipped` : 'Every league, prop and side it has graded'}</div></div><span class="chev">›</span></summary>
+    <div class="fold-body" style="padding:10px 14px 14px">
+      <table><thead><tr><th>Area</th><th class="r">Hit</th><th class="r">Expected</th><th class="r">Lines</th></tr></thead>
+      <tbody>${rows || '<tr><td colspan="4" class="faint">Not enough graded lines yet.</td></tr>'}</tbody></table>
+      <p class="faint" style="font-size:12px;margin:10px 0 0">An area is skipped automatically once it has ${40}+ graded lines, hits under 50%, and runs 5+ points below what was expected.</p>
+    </div></details>`;
+}
 function renderRecord() {
   const el = $('#view-record'), h = state.history;
   if (!state.recordTab) state.recordTab = state.saved.length ? 'mine' : 'daily';
@@ -2973,7 +3229,7 @@ function renderRecord() {
       <div class="card"><dt>Hit rate</dt><dd>${s.hit_rate == null ? '—' : pct(s.hit_rate)}</dd><small>${esc(leagues) || 'no graded picks yet'}</small></div>
       <div class="card"><dt>Slips won</dt><dd>${s.slips_cashed} of ${s.slips}</dd><small>${s.sat_out ? `${s.sat_out} sat out` : 'suggested entries'}</small></div>
       <div class="card"><dt>Slip P/L</dt><dd class="${plCls(s.slip_pl)}">${s.slips ? plStr(s.slip_pl) : '—'}</dd><small>at $${s.stake} each</small></div>
-    </dl>` + learningPanel(h.model) + `<div class="section-label">Past slips</div>`;
+    </dl>` + learningPanel(h.model) + areasPanel(h.areas) + `<div class="section-label">Past slips</div>`;
   if (!h.days.length) html += '<div class="card empty"><strong>No slips yet</strong>Your first daily slip will show up here.</div>';
   html += h.days.map((d, i) => {
     const hits = d.picks.filter(p => p.result === 'hit').length;

@@ -64,7 +64,7 @@ def view(files):
     h = files.get("pick_history.json") or {"days": {}}
     days = [{**h["days"][k], "slip": sa.slip_result(h["days"][k]["picks"], h["days"][k].get("entry"))}
             for k in sorted(h["days"], reverse=True)]
-    return {"days": days, "summary": sa.history_summary(h), "model": files.get("model.json")}
+    return {"days": days, "summary": sa.history_summary(h), "model": files.get("model.json"), "areas": sa.areas_report(h)}
 
 
 def page_meta():
@@ -79,6 +79,7 @@ def page_meta():
         "game_clock": sa.GAME_CLOCK, "box_aliases": sa.BOX_ALIASES, "scoreboard_groups": sa.SCOREBOARD_GROUPS,
         "offense_props": sorted(sa.OFFENSE_MATCHUP_PROPS), "pitcher_positions": sorted(sa.PITCHER_POSITIONS),
         "payouts": sa.PAYOUT_TABLES, "scan_times": sa.SCAN_TIMES,
+        "ctx_defaults": sa.CTX_DEFAULTS, "ctx_cap": sa.CTX_CAP,
     }
 
 
