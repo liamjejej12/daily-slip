@@ -480,15 +480,19 @@
     for (const p of probs) { const nx = new Array(dist.length + 1).fill(0); dist.forEach((v, i) => { nx[i] += v * (1 - p); nx[i + 1] += v * p; }); dist = nx; }
     return Object.entries(table).reduce((t, [h, m]) => t + dist[+h] * m, 0) - 1;
   }
+  const learned = () => (data && data.files['model.json']) || {};
+  const entryShrink = () => { const e = learned().entry || {}; return e.active ? e.shrink : META.entry_shrink; };
+  const maxPerGame = () => { const g = learned().same_game || {}; return g.active ? g.max_per_game : META.max_per_game; };
   function bestEntry(picks) {
     let best = null;
+    const shrink = entryShrink();
     for (let n = 2; n <= picks.length; n++) {
       const legs = picks.slice(0, n);
       const teams = new Set(legs.map(p => ((p.report || {}).player || {}).team || p.game + p.player));
       if (teams.size < 2) continue;
       for (const kind of ['power', 'flex']) {
         if (kind === 'power' && n > META.max_power_legs) continue;
-        const ev = entryEv(legs.map(p => 0.5 + (p.final_p - 0.5) * META.entry_shrink), kind);
+        const ev = entryEv(legs.map(p => 0.5 + (p.final_p - 0.5) * shrink), kind);
         if (ev != null && (!best || ev > best.ev)) best = { kind, legs: n, ev: Math.round(ev * 1e4) / 1e4, ids: legs.map(p => p.id) };
       }
     }
@@ -501,9 +505,9 @@
     const existing = {};
     for (const p of d.picks || []) existing[`${p.sport}|${p.player}|${p.prop}`] = p;
     const pool = d.board.filter(b => !b.injury && !b.pulled && b.final_p >= 0.5).sort((a, b) => b.final_p - a.final_p);
-    const picks = [], players = new Set(), perGame = {};
+    const picks = [], players = new Set(), perGame = {}, cap = maxPerGame();
     for (const b of pool) {
-      if (players.has(b.player) || (perGame[b.game] || 0) >= META.max_per_game) continue;
+      if (players.has(b.player) || (perGame[b.game] || 0) >= cap) continue;
       const k = `${b.sport}|${b.player}|${b.prop}`, old = existing[k];
       let rep = reports[k] || (old && old.line === b.line ? old.report : null);
       if (!rep) { try { rep = await analyze(b.sport, b.player, b.prop, b.line); } catch (e) { rep = null; } }
@@ -575,7 +579,9 @@
     }
     return null;
   }
-  function withSchedule(d) { return { ...d, cached: true, next_scan: nextScan(d.date === todayET() && d.locked) }; }
+  function withSchedule(d) {
+    return { ...d, cached: true, next_scan: nextScan(d.date === todayET() && d.locked), entry_shrink: entryShrink(), max_per_game: maxPerGame() };
+  }
   const json = (body, status = 200) => new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json' } });
 
   async function api(path, opts) {
@@ -583,7 +589,7 @@
     const route = url.pathname.replace(/^.*\/api\//, '');
     const body = opts && opts.body ? JSON.parse(opts.body) : {};
     await ready;
-    if (route === 'daily' || route === 'history' || route === 'live') await refresh(false);
+    if (['daily', 'history', 'live', 'grade'].includes(route)) await refresh(false);
     switch (route) {
       case 'daily': {
         const d = currentDaily();
@@ -601,6 +607,20 @@
         return json(v);
       }
       case 'live': return json(await livePicks());
+      case 'grade': {
+        const out = {};
+        await Promise.all((body.legs || []).slice(0, 40).map(async leg => {
+          try {
+            const lv = await liveForPick({ ...leg });
+            if (!lv) return;
+            if (lv.state === 'post' && lv.value != null)
+              out[leg.id] = { result: lv.value === leg.line ? 'push' : (lv.value > leg.line) === (leg.side === 'MORE') ? 'hit' : 'miss', actual: lv.value };
+            else if (lv.state === 'post' && lv.note === 'Did not play') out[leg.id] = { result: 'void', actual: null };
+            else out[leg.id] = { state: lv.state, value: lv.value ?? null, detail: lv.detail };
+          } catch (e) {}
+        }));
+        return json(out);
+      }
       case 'search': {
         const q = url.searchParams.get('q') || '', sport = url.searchParams.get('sport');
         if (!sportOf(sport) || q.length < 3) return json([]);

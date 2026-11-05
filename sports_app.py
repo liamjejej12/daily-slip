@@ -624,6 +624,7 @@ def entry_ev(probs, kind):
 
 def best_entry(picks):
     """Highest-EV entry from the top 2 to 6 picks; sit out when nothing clears MIN_ENTRY_EV."""
+    shrink = entry_shrink()
     best = None
     for n in range(2, len(picks) + 1):
         legs = picks[:n]
@@ -633,7 +634,7 @@ def best_entry(picks):
         for kind in ("power", "flex"):
             if kind == "power" and n > MAX_POWER_LEGS:
                 continue
-            ev = entry_ev([0.5 + (p["final_p"] - 0.5) * ENTRY_SHRINK for p in legs], kind)
+            ev = entry_ev([0.5 + (p["final_p"] - 0.5) * shrink for p in legs], kind)
             if ev is not None and (best is None or ev > best["ev"]):
                 best = {"kind": kind, "legs": n, "ev": round(ev, 4), "ids": [p["id"] for p in legs]}
     if not best:
@@ -743,13 +744,13 @@ def scan_daily():
 
     # 5. Build the slip: best blended probability, 1 per player, max 2 per game
     candidates.sort(key=lambda c: -c["final_p"])
-    picks, players, per_game = [], set(), {}
+    picks, players, per_game, game_cap = [], set(), {}, max_per_game()
     for c in candidates:
         if c["final_p"] < 0.5:
             break                      # never fill the slip with a pick it expects to lose
         if c["injury"]:
             continue                   # listed on the injury report: skip
-        if c["player"] in players or per_game.get(c["game"], 0) >= MAX_PER_GAME:
+        if c["player"] in players or per_game.get(c["game"], 0) >= game_cap:
             continue
         picks.append(c)
         players.add(c["player"])
@@ -964,6 +965,103 @@ def clamp(x):
     return max(-MAX_ADJ, min(MAX_ADJ, x))
 
 
+ENTRY_PRIOR_DAYS  = 30    # days of results the default entry caution is worth
+ENTRY_MIN_DAYS    = 10    # graded days before entry caution is adjusted
+ENTRY_RANGE       = (0.5, 0.9)   # never trim estimates less than 10% or more than 50%
+SAME_GAME_MIN     = 40    # same-game pick pairs before the per-game limit can change
+
+
+def payout_mult(kind, n, hits):
+    if n < 2:
+        return 1.0                                       # refunded
+    if kind == "flex" and n >= 3:
+        return PAYOUT_TABLES["flex"][n].get(hits, 0)
+    return PAYOUT_TABLES["power"].get(n, {}).get(hits, 0)
+
+
+def cash_prob(probs, kind):
+    dist = [1.0]
+    for q in probs:
+        nxt = [0.0] * (len(dist) + 1)
+        for i, v in enumerate(dist):
+            nxt[i] += v * (1 - q)
+            nxt[i + 1] += v * q
+        dist = nxt
+    return sum(v for h, v in enumerate(dist) if payout_mult(kind, len(probs), h) > 1)
+
+
+def learn_entries(h):
+    """Replay every entry size the picker could have suggested each day and compare how often it
+    predicted the slip would cash with how often it actually did. If slips cash less than predicted,
+    entry choice gets more cautious (and less cautious if they cash more)."""
+    sims, days = [], 0
+    for day in h["days"].values():
+        legs = [p for p in day["picks"] if p.get("final_p") is not None]
+        if len(legs) < 2 or any(not p.get("result") for p in legs):
+            continue
+        days += 1
+        for n in range(2, min(len(legs), 6) + 1):
+            for kind in ("power", "flex"):
+                if (kind == "power" and n > MAX_POWER_LEGS) or (kind == "flex" and n < 3):
+                    continue
+                live = [p for p in legs[:n] if p["result"] in ("hit", "miss")]
+                if len(live) < 2:
+                    continue
+                hits = sum(p["result"] == "hit" for p in live)
+                sims.append(([p["final_p"] for p in live], kind, payout_mult(kind, len(live), hits) > 1))
+    n = len(sims)
+
+    def brier(shrink):
+        return sum((cash_prob([0.5 + (q - 0.5) * shrink for q in probs], kind) - cashed) ** 2
+                   for probs, kind, cashed in sims) / n
+
+    fit = min((x / 100 for x in range(40, 101, 5)), key=brier) if n >= 10 else ENTRY_SHRINK
+    # a day's replayed slips share the same picks, so evidence is counted in days, not slips
+    shrink = (days * fit + ENTRY_PRIOR_DAYS * ENTRY_SHRINK) / (days + ENTRY_PRIOR_DAYS)
+    shrink = min(max(shrink, ENTRY_RANGE[0]), ENTRY_RANGE[1])
+    active = days >= ENTRY_MIN_DAYS
+    used = shrink if active else ENTRY_SHRINK
+    return {
+        "active": active, "n": n, "days": days, "min_days": ENTRY_MIN_DAYS, "fit_shrink": fit,
+        "shrink": round(used, 3),
+        "predicted_cash": sum(cash_prob([0.5 + (q - 0.5) * used for q in pr], k) for pr, k, _ in sims) / n if n else None,
+        "actual_cash": sum(c for _, _, c in sims) / n if n else None,
+    }
+
+
+def learn_same_game(h):
+    """Do picks from the same game miss together more than chance? If so, allow only one per game."""
+    pairs, expected, observed = 0, 0.0, 0
+    for day in h["days"].values():
+        rows = [r for r in (day.get("board") or day["picks"])
+                if r.get("result") in ("hit", "miss") and r.get("final_p") is not None and r.get("game")]
+        by_game = {}
+        for r in rows:
+            by_game.setdefault(r["game"], []).append(r)
+        for rs in by_game.values():
+            for i in range(len(rs)):
+                for j in range(i + 1, len(rs)):
+                    pairs += 1
+                    expected += (1 - rs[i]["final_p"]) * (1 - rs[j]["final_p"])
+                    observed += rs[i]["result"] == "miss" and rs[j]["result"] == "miss"
+    active = pairs >= SAME_GAME_MIN
+    excess = (observed - expected) / pairs if pairs else 0.0
+    return {"active": active, "pairs": pairs, "min": SAME_GAME_MIN,
+            "observed_both_miss": observed / pairs if pairs else None,
+            "expected_both_miss": expected / pairs if pairs else None,
+            "max_per_game": 1 if active and excess > 0.04 else MAX_PER_GAME}
+
+
+def entry_shrink():
+    e = load_model().get("entry") or {}
+    return e.get("shrink", ENTRY_SHRINK) if e.get("active") else ENTRY_SHRINK
+
+
+def max_per_game():
+    g = load_model().get("same_game") or {}
+    return g.get("max_per_game", MAX_PER_GAME) if g.get("active") else MAX_PER_GAME
+
+
 def fit_model(h):
     """Learn from every graded line: blend weight, overall calibration, and group adjustments.
     Every estimate is shrunk toward 'no change' so small samples can't swing the picker."""
@@ -1022,6 +1120,7 @@ def fit_model(h):
         "bias": round(bias, 4) if active else 0.0, "segments": segments if active else {},
         "groups": report[:12], "calibration": buckets,
         "overall": {"expected": sum(pred.values()) / n, "actual": sum(y.values()) / n} if n else None,
+        "entry": learn_entries(h), "same_game": learn_same_game(h),
         "updated": datetime.now().isoformat(timespec="minutes"),
     }
     MODEL_FILE.write_text(json.dumps(model, indent=1))
@@ -1130,9 +1229,9 @@ def rebuild_picks(d, reports=None):
     existing = {(p["sport"], p["player"], p["prop"]): p for p in d.get("picks", [])}
     pool = sorted((b for b in d["board"] if not b.get("injury") and not b.get("pulled") and b["final_p"] >= 0.5),
                   key=lambda b: -b["final_p"])
-    picks, players, per_game = [], set(), {}
+    picks, players, per_game, game_cap = [], set(), {}, max_per_game()
     for b in pool:
-        if b["player"] in players or per_game.get(b["game"], 0) >= MAX_PER_GAME:
+        if b["player"] in players or per_game.get(b["game"], 0) >= game_cap:
             continue
         key = (b["sport"], b["player"], b["prop"])
         old = existing.get(key)
@@ -1465,7 +1564,8 @@ def api_daily():
     """Today's locked slip from disk; scans (spending credits) only when asked and not yet locked."""
     def with_schedule(payload, locked):
         nxt = next_scan_time(locked)
-        return jsonify({**payload, "next_scan": nxt.isoformat(timespec="minutes") if nxt else None})
+        return jsonify({**payload, "next_scan": nxt.isoformat(timespec="minutes") if nxt else None,
+                        "entry_shrink": entry_shrink(), "max_per_game": max_per_game()})
 
     d = load_daily()
     if d and d.get("locked"):
@@ -1512,6 +1612,28 @@ def api_live():
                         p["result"], p["actual"] = finals[p["id"]]
                         p["graded_at"] = stamp
             save_history(h)
+    return jsonify(out)
+
+
+@app.post("/api/grade")
+def api_grade():
+    """Results so far for saved-slip legs: hit / miss / push / void once final, live numbers before."""
+    legs = ((request.get_json(force=True, silent=True) or {}).get("legs") or [])[:40]
+    out = {}
+    for leg in legs:
+        try:
+            live = live_for_pick(dict(leg))
+        except (requests.RequestException, ValueError, KeyError):
+            live = None
+        if not live:
+            continue
+        if live["state"] == "post" and live.get("value") is not None:
+            v, line = live["value"], leg["line"]
+            out[leg["id"]] = {"result": "push" if v == line else "hit" if (v > line) == (leg["side"] == "MORE") else "miss", "actual": v}
+        elif live["state"] == "post" and live.get("note") == "Did not play":
+            out[leg["id"]] = {"result": "void", "actual": None}
+        else:
+            out[leg["id"]] = {"state": live["state"], "value": live.get("value"), "detail": live.get("detail")}
     return jsonify(out)
 
 
@@ -1761,6 +1883,20 @@ PAGE = r'''<!doctype html>
   .payouts .max span { color: var(--muted); font-size: 12px; } .payouts .max b { font-size: 24px; font-weight: 800; }
   .slip-warn { color: var(--warn); font-size: 12px; margin-top: 8px; }
 
+  /* Split suggestions */
+  .splits { display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap: 10px; padding-top: 8px; }
+  .split { padding: 13px; position: relative; }
+  .split .lbl { font-weight: 700; font-size: 14px; margin-bottom: 6px; }
+  .split .grp { color: var(--muted); font-size: 12px; margin: 2px 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .split .grp b { color: var(--text); font-weight: 600; }
+  .split dl { margin: 10px 0; display: grid; gap: 3px; font-size: 12px; }
+  .split dl div { display: flex; justify-content: space-between; gap: 8px; }
+  .split dt { color: var(--faint); } .split dd { margin: 0; font-weight: 600; }
+  .split .best { position: absolute; top: -8px; right: 10px; background: linear-gradient(90deg, var(--accent), var(--pos)); color: var(--bg);
+    font-size: 10px; font-weight: 800; letter-spacing: 0.06em; padding: 2px 7px; border-radius: 6px; }
+  .split .btn { width: 100%; padding: 8px; font-size: 13px; }
+  .seg.wide { max-width: 320px; margin-bottom: 14px; }
+
   /* Record */
   .summary { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px; margin: 0 0 14px; }
   @media (max-width: 720px) { .summary { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
@@ -1867,8 +2003,10 @@ const PAYOUTS = {
   flex: { 3: { 3: 3, 2: 1 }, 4: { 4: 6, 3: 1.5 }, 5: { 5: 10, 4: 2, 3: 0.4 }, 6: { 6: 25, 5: 2, 4: 0.4 } }
 };
 const MAX_LEGS = 6;
-const SHRINK = CONFIG.shrink ?? 0.7, MAX_POWER = CONFIG.max_power_legs ?? 3;
-const cautious = p => 0.5 + (p - 0.5) * SHRINK;   // the picker trims estimates toward 50/50 to allow for error
+const MAX_POWER = CONFIG.max_power_legs ?? 3;
+// The picker trims estimates toward 50/50 to allow for error; how much is learned from past slips.
+const shrinkNow = () => (state.daily && state.daily.entry_shrink) ?? CONFIG.shrink ?? 0.7;
+const cautious = p => 0.5 + (p - 0.5) * shrinkNow();
 
 const store = {
   get(k, d) { try { const v = localStorage.getItem(k); return v ? JSON.parse(v) : d; } catch (e) { return d; } },
@@ -1878,11 +2016,12 @@ const state = {
   daily: null, dailyError: null, dailyErrorTitle: null, noRetry: false, loading: false, nextScan: null,
   researched: store.get('ps_researched', []), slip: store.get('ps_slip', []),
   mode: store.get('ps_mode', 'flex'), stake: store.get('ps_stake', 10), filter: 'all',
-  view: 'today', history: null, results: {}, live: {}, editing: null, lineMsg: null, open: null
+  view: 'today', history: null, results: {}, live: {}, editing: null, lineMsg: null, open: null,
+  saved: store.get('ps_saved', []), savedLive: {}, recordTab: null
 };
 function persist() {
   store.set('ps_researched', state.researched); store.set('ps_slip', state.slip);
-  store.set('ps_mode', state.mode); store.set('ps_stake', state.stake);
+  store.set('ps_mode', state.mode); store.set('ps_stake', state.stake); store.set('ps_saved', state.saved);
 }
 
 const $ = s => document.querySelector(s);
@@ -1902,7 +2041,8 @@ const todaysResult = id => state.daily && state.results[`${state.daily.date}|${i
 function findPick(id) {
   const d = dailyPicks().find(p => p.id === id);
   if (d) return { id, player: d.player, league: d.sport, prop: d.prop, line: d.line, side: d.side, prob: d.final_p,
-                  team: (d.report && d.report.player.team) || '' };
+                  team: (d.report && d.report.player.team) || '', commence: d.commence, game: d.game,
+                  espn_id: ((d.report || {}).player || {}).id || null };
   return state.researched.find(p => p.id === id);
 }
 function togglePick(id) {
@@ -1967,6 +2107,67 @@ function applyOption(o) {
   toast(`${o.label} loaded into your slip`);
 }
 
+/* ───────── Splitting the picks into several slips ───────── */
+function payoutDist(probs, kind) {                 // [[multiplier, probability], ...] for one entry
+  const table = payTable(kind, probs.length) || {}, out = new Map();
+  distribution(probs).forEach((p, h) => { const m = table[h] || 0; out.set(m, (out.get(m) || 0) + p); });
+  return [...out];
+}
+function combine(a, b) {
+  const out = new Map();
+  for (const [m1, p1] of a) for (const [m2, p2] of b) out.set(m1 + m2, (out.get(m1 + m2) || 0) + p1 * p2);
+  return [...out];
+}
+function scorePlan(entries) {                       // entries: [{kind, legs: [pick, ...]}], same stake on each
+  const dist = entries.map(e => payoutDist(e.legs.map(p => cautious(p.final_p)), e.kind)).reduce(combine);
+  const k = entries.length;
+  return { entries, k,
+           ahead: dist.filter(([m]) => m > k + 1e-9).reduce((t, [, p]) => t + p, 0),
+           bust: dist.filter(([m]) => m === 0).reduce((t, [, p]) => t + p, 0),
+           ev: dist.reduce((t, [m, p]) => t + m * p, 0) / k - 1 };
+}
+const teamsOk = legs => new Set(legs.map(p => ((p.report || {}).player || {}).team || p.game + p.player)).size >= 2;
+const entryLabel = e => `${e.legs.length}-pick ${e.kind === 'power' ? 'Power' : 'Flex'}`;
+function splitPlans() {
+  const picks = dailyPicks().slice(0, 6), m = picks.length;
+  if (m < 4) return [];
+  const kindsFor = n => n === 2 ? ['power'] : n === 3 ? ['power', 'flex'] : ['flex'];
+  const plans = [];
+  for (let size = 4; size <= m; size++) {
+    for (let mask = 1; mask < (1 << size) - 1; mask++) {
+      if (!(mask & 1)) continue;                    // the top pick always sits in the first slip: each split counted once
+      const A = [], B = [];
+      for (let i = 0; i < size; i++) (mask & (1 << i) ? A : B).push(picks[i]);
+      if (A.length < 2 || B.length < 2 || !teamsOk(A) || !teamsOk(B)) continue;
+      for (const ka of kindsFor(A.length)) for (const kb of kindsFor(B.length))
+        plans.push(scorePlan([{ kind: ka, legs: A }, { kind: kb, legs: B }]));
+    }
+  }
+  if (m === 6) {                                    // three 2-pick Powers
+    const pair = (rest) => {
+      if (!rest.length) return [[]];
+      const [a, ...others] = rest, out = [];
+      others.forEach((b, i) => { for (const tail of pair(others.filter((_, j) => j !== i))) out.push([[a, b], ...tail]); });
+      return out;
+    };
+    for (const groups of pair(picks)) if (groups.every(teamsOk)) plans.push(scorePlan(groups.map(g => ({ kind: 'power', legs: g }))));
+  }
+  plans.sort((a, b) => b.ahead - a.ahead || b.ev - a.ev);
+  const seen = new Set();                            // never suggest a split it expects to lose money on
+  plans.splice(0, plans.length, ...plans.filter(pl => pl.ev >= 0));                            // best version of each shape only, for variety
+  return plans.filter(pl => { const k = pl.entries.map(entryLabel).join('+'); return !seen.has(k) && seen.add(k); }).slice(0, 3);
+}
+function saveSlip(legs, kind, stake, note) {
+  if (legs.length < 2) return;
+  const date = (state.daily && state.daily.date) || new Date().toISOString().slice(0, 10);
+  state.saved.unshift({ id: 's' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6), saved_at: new Date().toISOString(),
+    date, kind, stake, note: note || '', results: {},
+    legs: legs.map(l => ({ id: l.id, player: l.player, league: l.league || l.sport, sport: l.league || l.sport, prop: l.prop, line: l.line,
+                           side: l.side, prob: l.prob ?? l.final_p ?? null, commence: l.commence || null, game: l.game || '',
+                           espn_id: l.espn_id || (((l.report || {}).player || {}).id) || null })) });
+  persist();
+}
+
 /* ───────── Header ───────── */
 function renderHeader() {
   $('#today').textContent = new Date().toLocaleDateString([], { weekday: 'long', month: 'short', day: 'numeric' });
@@ -1979,10 +2180,16 @@ function renderHeader() {
   $('#slipBadge').hidden = !n; $('#slipBadge').textContent = n;
   ['today', 'slip', 'record', 'research'].forEach(v => { $('#view-' + v).hidden = state.view !== v; });
 }
+$('#view-record').addEventListener('click', e => {
+  const t = e.target.closest('[data-rtab]');
+  if (t) { state.recordTab = t.dataset.rtab; render(); if (state.recordTab === 'mine') gradeSaved(); return; }
+  const del = e.target.closest('[data-delete-saved]');
+  if (del && confirm('Delete this saved slip?')) { state.saved = state.saved.filter(s => s.id !== del.dataset.deleteSaved); persist(); render(); }
+});
 $('#tabs').addEventListener('click', e => {
   const b = e.target.closest('[data-view]'); if (!b) return;
   state.view = b.dataset.view; render(); window.scrollTo(0, 0);
-  if (state.view === 'record') loadHistory();
+  if (state.view === 'record') { loadHistory(); gradeSaved(); }
 });
 
 /* ───────── Mini chart: last 10 results vs the line ───────── */
@@ -2140,6 +2347,19 @@ function renderSlipView() {
             <div><dt>Pays up to</dt><dd>${o.top}×</dd></div></dl></button>`;
     }).join('')}</div>
     <p class="faint" style="font-size:12px;margin:4px 0 0">Uses today's top picks in order. Smaller entries cash more often; bigger ones pay more.</p>` : '';
+  const plans = splitPlans();
+  const single = best ? scorePlan([{ kind: best.kind, legs: dailyPicks().filter(p => best.ids.includes(p.id)) }]) : null;
+  const splitCards = plans.length ? `<div class="section-label">Or split it up</div>
+    <div class="splits">${plans.map((pl, i) => `<div class="card split">
+        ${i === 0 ? '<span class="best">SAFEST</span>' : ''}
+        <div class="lbl">${pl.entries.map(entryLabel).join(' + ')}</div>
+        ${pl.entries.map(e => `<div class="grp"><b>${esc(entryLabel(e))}:</b> ${esc(e.legs.map(p => p.player.split(' ').slice(-1)[0]).join(', '))}</div>`).join('')}
+        <dl><div><dt>Chance to come out ahead</dt><dd>${pct0(pl.ahead)}</dd></div>
+            <div><dt>Chance to lose it all</dt><dd>${pct0(pl.bust)}</dd></div>
+            <div><dt>Est. value</dt><dd class="${pl.ev >= 0 ? 'pos' : 'neg'}">${evStr(pl.ev)}</dd></div>
+            <div><dt>Total stake</dt><dd>$${state.stake * pl.k} ($${state.stake} each)</dd></div></dl>
+        <button class="btn" data-save-plan="${i}">Save as ${pl.k} slips</button></div>`).join('')}</div>
+    ${single ? `<p class="faint" style="font-size:12px;margin:6px 0 0">For comparison, one ${esc(best.label)}: ${pct0(single.ahead)} chance to come out ahead, ${pct0(single.bust)} chance to lose it all, ${evStr(single.ev)} est. value. Splitting usually cashes more often but pays less at the top.</p>` : ''}` : '';
 
   const table = payTable(state.mode, n);
   let pay = '';
@@ -2158,7 +2378,7 @@ function renderSlipView() {
   }
   const warn = n >= 2 && legs.every(l => l.team) && new Set(legs.map(l => l.team)).size === 1 ? 'PrizePicks requires players from at least 2 teams.' : '';
   el.innerHTML = `<h2 class="h2">Your slip</h2><p class="sub">Pick an entry size, adjust the legs, then share it.</p>`
-    + optionCards
+    + optionCards + splitCards
     + `<div class="slip-grid" style="margin-top:18px">
         <div><div class="section-label" style="margin-top:0">Legs · ${n} of ${MAX_LEGS}</div>
           <div class="legs">${n ? legs.map(l => {
@@ -2170,7 +2390,8 @@ function renderSlipView() {
               ${status}<button class="x" data-unslip="${esc(l.id)}" aria-label="Remove ${esc(l.player)}">×</button></div>`;
           }).join('') : `<div class="card empty" style="padding:20px"><strong>No legs yet</strong>Pick an entry above, or add picks from Today with +.</div>`}</div>
           ${n ? `<div style="display:flex;gap:8px;margin-top:12px;flex-wrap:wrap">
-            <button class="btn btn-primary" id="shareBtn">Share slip image</button><button class="btn" id="clearSlip">Clear</button></div>` : ''}
+            <button class="btn btn-primary" id="saveBtn">Save to My Slips</button><button class="btn" id="shareBtn">Share image</button><button class="btn" id="clearSlip">Clear</button></div>
+          <p class="faint" style="font-size:12px;margin:8px 0 0">Saving keeps this slip with your $${state.stake} stake on this device and grades it as games finish.</p>` : ''}
         </div>
         <div class="card payout-card">
           <div class="seg"><button data-mode="power" class="${state.mode === 'power' ? 'on' : ''}">Power</button><button data-mode="flex" class="${state.mode === 'flex' ? 'on' : ''}">Flex</button></div>
@@ -2186,6 +2407,17 @@ $('#view-slip').addEventListener('click', e => {
   const u = e.target.closest('[data-unslip]'); if (u) { state.slip = state.slip.filter(id => id !== u.dataset.unslip); render(); return; }
   const m = e.target.closest('[data-mode]'); if (m) { state.mode = m.dataset.mode; render(); return; }
   if (e.target.closest('#clearSlip')) { state.slip = []; render(); return; }
+  if (e.target.closest('#saveBtn')) {
+    const legs = state.slip.map(findPick).filter(Boolean);
+    if (!payTable(state.mode, legs.length)) return toast(state.mode === 'flex' ? 'Flex needs 3 to 6 picks.' : 'Power needs 2 to 6 picks.');
+    saveSlip(legs, state.mode, state.stake); toast('Saved to My Slips (Record tab)'); return;
+  }
+  const sp = e.target.closest('[data-save-plan]');
+  if (sp) {
+    const pl = splitPlans()[+sp.dataset.savePlan];
+    pl.entries.slice().reverse().forEach(en => saveSlip(en.legs.map(p => findPick(p.id)), en.kind, state.stake, pl.entries.map(entryLabel).join(' + ')));
+    toast(`Saved ${pl.k} slips to My Slips (Record tab)`); return;
+  }
   if (e.target.closest('#shareBtn')) shareSlip();
 });
 $('#view-slip').addEventListener('input', e => {        // live number while dragging...
@@ -2269,7 +2501,7 @@ async function shareSlip() {
       <a class="btn btn-primary" href="${url}" download="${file.name}" style="text-decoration:none">Download</a><button class="btn" data-close>Done</button></div></div>`;
     m.addEventListener('click', ev => { if (ev.target === m || ev.target.hasAttribute('data-close')) { m.remove(); URL.revokeObjectURL(url); } });
     document.body.appendChild(m);
-  } finally { if (btn) { btn.disabled = false; btn.textContent = 'Share slip image'; } }
+  } finally { if (btn) { btn.disabled = false; btn.textContent = 'Share image'; } }
 }
 
 /* ───────── Live in-game tracking ───────── */
@@ -2301,6 +2533,7 @@ async function loadLive() {
     state.live = await fetch('/api/live').then(r => r.json());
     if (Object.values(state.live).some(l => l.state === 'in')) next = 30 * 1000;
     if (Object.values(state.live).some(l => l.state === 'post') && state.history) loadHistory();
+    gradeSaved();
     render();
   } catch (e) {}
   liveTimer = setTimeout(loadLive, next);
@@ -2381,6 +2614,14 @@ function learningPanel(m) {
   }
   const calib = (m.calibration || []).map(b => `<tr><td>${Math.round(b.range[0] * 100) || '<'}${b.range[0] ? '–' : ''}${Math.round(b.range[1] * 100)}%</td>
       <td class="r">${(b.expected * 100).toFixed(1)}%</td><td class="r ${b.actual >= b.expected ? 'pos' : 'neg'}">${(b.actual * 100).toFixed(1)}%</td><td class="r faint">${b.n}</td></tr>`).join('');
+  const en = m.entry, sg = m.same_game;
+  const slipRows = [];
+  if (en) slipRows.push(`<tr><td>Entry sizing (${en.n} replayed slips, ${en.days} days)</td><td class="r">${en.actual_cash != null ? `${Math.round(en.actual_cash * 100)}% cashed vs ${Math.round(en.predicted_cash * 100)}% predicted` : '—'}</td>
+      <td class="r faint">${en.active ? `trims ${Math.round((1 - en.shrink) * 100)}% toward 50/50` : `starts at ${en.min_days} days`}</td></tr>`);
+  if (sg) slipRows.push(`<tr><td>Same-game picks (${sg.pairs} pairs)</td><td class="r">${sg.observed_both_miss != null ? `both missed ${Math.round(sg.observed_both_miss * 100)}% vs ${Math.round(sg.expected_both_miss * 100)}% chance` : '—'}</td>
+      <td class="r faint">${sg.active ? `max ${sg.max_per_game} per game` : `starts at ${sg.min} pairs`}</td></tr>`);
+  const slipTable = slipRows.length ? `<div style="padding:0 14px 14px"><div class="section-label" style="margin-top:0">Learning from slip results</div>
+      <table><tbody>${slipRows.join('')}</tbody></table></div>` : '';
   return `<details class="card fold learn"><summary><div><b>${summary}</b>
       ${m.active ? '' : `<div class="progress" style="width:180px"><span style="width:${Math.min(m.n / m.learn_min, 1) * 100}%"></span></div>`}</div><span class="chev">›</span></summary>
     <div class="fold-body"><p class="muted" style="font-size:12.5px;margin:10px 14px 0">${m.active ? 'Adjustments are capped and shrink toward the default when evidence is thin.'
@@ -2390,21 +2631,111 @@ function learningPanel(m) {
         <tbody>${changes.join('') || `<tr><td colspan="3" class="faint">${m.active ? 'Nothing has strayed far enough to adjust.' : 'None yet.'}</td></tr>`}</tbody></table>
       <table><thead><tr><th>Estimated win</th><th class="r">Expected</th><th class="r">Actual</th><th class="r">Lines</th></tr></thead>
         <tbody>${calib || '<tr><td colspan="4" class="faint">No graded lines yet.</td></tr>'}</tbody></table>
-    </div></div></details>`;
+    </div>${slipTable}</div></details>`;
 }
+/* Plain-English slip outcomes */
+function slipOutcome(legsWithResults, kind, stake) {
+  if (legsWithResults.some(l => !l.result)) return null;
+  const live = legsWithResults.filter(l => l.result === 'hit' || l.result === 'miss');
+  const hits = live.filter(l => l.result === 'hit').length, n = live.length;
+  if (n < 2) return { n, hits, mult: 1, pl: 0, type: 'Refunded' };
+  const mult = kind === 'flex' && n >= 3 ? (PAYOUTS.flex[n][hits] || 0) : (hits === n ? PAYOUTS.power[n] : 0);
+  return { n, hits, mult, pl: Math.round(stake * (mult - 1) * 100) / 100, type: `${n}-pick ${kind === 'flex' && n >= 3 ? 'Flex' : 'Power'}` };
+}
+function explainSlip(o) {
+  if (!o) return '';
+  const money2 = v => (v >= 0 ? '+' : '-') + money(Math.abs(v));
+  if (o.sat_out) return 'Sat out (no bet)';
+  if (o.type === 'Refunded') return 'Refunded (too many players sat out) · $0.00';
+  const head = `${o.hits} of ${o.n} hit · ${o.type}`;
+  if (o.mult > 1) return `${head} paid ${o.mult}× · ${money2(o.pl)}`;
+  if (o.mult === 1) return `${head} paid back 1× · $0.00`;
+  if (o.mult > 0) return `${head} paid ${o.mult}× · ${money2(o.pl)}`;
+  return `${head} lost · ${money2(o.pl)}`;
+}
+function savedLegResult(slip, leg) {
+  return slip.results[leg.id] || (state.results[`${slip.date}|${leg.id}`] || null);
+}
+let gradingSaved = false;
+async function gradeSaved() {
+  if (gradingSaved || !state.saved.length) return;
+  gradingSaved = true;
+  try {
+    const now = Date.now(), todo = [];
+    for (const slip of state.saved) for (const leg of slip.legs) {
+      const known = savedLegResult(slip, leg);
+      if (known && known.result) { slip.results[leg.id] = { result: known.result, actual: known.actual ?? null }; continue; }
+      if (leg.commence && new Date(leg.commence).getTime() < now) todo.push(leg);
+    }
+    if (todo.length) {
+      const res = await fetch('/api/grade', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ legs: todo }) }).then(r => r.json());
+      for (const slip of state.saved) for (const leg of slip.legs) {
+        const r = res[leg.id];
+        if (!r) continue;
+        if (r.result) slip.results[leg.id] = { result: r.result, actual: r.actual };
+        else state.savedLive[leg.id] = r;
+      }
+    }
+    persist();
+  } catch (e) {} finally { gradingSaved = false; }
+  if (state.view === 'record') render();
+}
+function renderMySlips() {
+  if (!state.saved.length) return `<div class="card empty"><strong>No saved slips yet</strong>Build a slip on the Slip tab, set your stake to match your real entry, and tap <b>Save to My Slips</b>. It grades itself as games finish.</div>`;
+  const plStr = v => (v >= 0 ? '+' : '-') + money(Math.abs(v));
+  const outcomes = state.saved.map(sl => slipOutcome(sl.legs.map(l => ({ ...l, ...(savedLegResult(sl, l) || {}) })), sl.kind, sl.stake));
+  const done = outcomes.filter(Boolean);
+  const won = done.filter(o => o.pl > 0).length, net = done.reduce((t, o) => t + o.pl, 0);
+  const staked = state.saved.reduce((t, sl, i) => t + (outcomes[i] ? sl.stake : 0), 0);
+  let html = `<dl class="summary">
+      <div class="card"><dt>Slips won</dt><dd>${won} of ${done.length}</dd><small>${state.saved.length - done.length} still playing</small></div>
+      <div class="card"><dt>Net P/L</dt><dd class="${net > 0 ? 'pos' : net < 0 ? 'neg' : ''}">${done.length ? plStr(net) : '—'}</dd><small>simulated money</small></div>
+      <div class="card"><dt>Staked</dt><dd>${money(staked)}</dd><small>on finished slips</small></div>
+      <div class="card"><dt>Return</dt><dd>${staked ? Math.round((net / staked) * 100) + '%' : '—'}</dd><small>profit ÷ staked</small></div>
+    </dl>`;
+  html += state.saved.map((sl, i) => {
+    const o = outcomes[i];
+    const date = new Date(sl.date + 'T12:00').toLocaleDateString([], { weekday: 'short', month: 'short', day: 'numeric' });
+    const label = `${sl.legs.length}-pick ${sl.kind === 'flex' ? 'Flex' : 'Power'} · $${sl.stake}`;
+    const status = o ? `<b class="${o.pl > 0 ? 'pos' : o.pl < 0 ? 'neg' : ''}">${esc(explainSlip(o))}</b>`
+      : `<span class="muted">${sl.legs.filter(l => (savedLegResult(sl, l) || {}).result === 'hit').length} hit so far · playing</span>`;
+    const rows = sl.legs.map(l => {
+      const r = savedLegResult(sl, l), lv = state.savedLive[l.id] || state.live[l.id];
+      const actual = r && r.actual != null ? r.actual : lv && lv.value != null ? lv.value : '—';
+      const tag = r && r.result ? resultTag({ result: r.result }) : lv && lv.state === 'in' ? '<span class="res pending" style="color:var(--neg)">LIVE</span>' : '<span class="res pending">PENDING</span>';
+      return `<tr><td>${esc(l.player)}<div class="faint hide-sm" style="font-size:11.5px">${esc(leagueLabel(l.league))} · ${esc(l.prop)}</div></td>
+        <td class="r">${l.line}</td><td><span class="${l.side === 'MORE' ? 'pos' : 'neg'}" style="font-weight:700;font-size:12px">${l.side}</span></td>
+        <td class="r">${actual}</td><td class="r">${tag}</td></tr>`;
+    }).join('');
+    return `<details class="card fold" ${i === 0 ? 'open' : ''}><summary><div><b>${date}</b> <span class="faint" style="font-size:12px">${esc(label)}</span>
+        <div style="font-size:12.5px;margin-top:2px">${status}</div></div><span class="chev">›</span></summary>
+      <div class="fold-body"><table class="results"><thead><tr><th>Player</th><th class="r">Line</th><th>Pick</th><th class="r">Actual</th><th class="r">Result</th></tr></thead><tbody>${rows}</tbody></table>
+        <div style="display:flex;justify-content:space-between;align-items:center;padding:8px 14px 10px">
+          <span class="faint" style="font-size:11.5px">${sl.note ? esc(sl.note) + ' · ' : ''}saved on this device</span>
+          <button class="link" data-delete-saved="${sl.id}">Delete</button></div></div></details>`;
+  }).join('');
+  return html + `<p class="footnote">Simulated money only, to mirror your real PrizePicks entries. Players who don't play drop out and the payout is recalculated, as on PrizePicks.</p>`;
+}
+
 function renderRecord() {
   const el = $('#view-record'), h = state.history;
+  if (!state.recordTab) state.recordTab = state.saved.length ? 'mine' : 'daily';
+  const tabs = `<div class="seg wide"><button data-rtab="mine" class="${state.recordTab === 'mine' ? 'on' : ''}">My slips</button><button data-rtab="daily" class="${state.recordTab === 'daily' ? 'on' : ''}">Daily picks</button></div>`;
+  if (state.recordTab === 'mine') {
+    el.innerHTML = `<h2 class="h2">Record</h2><p class="sub">Your saved slips, graded automatically.</p>` + tabs + renderMySlips();
+    return;
+  }
   if (!h) { el.innerHTML = '<div class="card empty"><span class="spinner"></span>&nbsp; Checking results…</div>'; return; }
   const s = h.summary;
   const plStr = v => (v >= 0 ? '+' : '-') + money(Math.abs(v));
   const plCls = v => v > 0 ? 'pos' : v < 0 ? 'neg' : '';
   const leagues = Object.entries(s.by_sport).filter(([, v]) => v.hit + v.miss).map(([k, v]) => `${leagueLabel(k)} ${v.hit}-${v.miss}`).join(' · ');
   const extras = [s.push ? `${s.push} push` : '', s.void ? `${s.void} void` : '', s.pending ? `${s.pending} pending` : ''].filter(Boolean).join(' · ');
-  let html = `<h2 class="h2">Record</h2><p class="sub">Every daily pick, graded from ESPN box scores.</p>
+  let html = `<h2 class="h2">Record</h2><p class="sub">Every daily pick, graded from ESPN box scores.</p>` + tabs + `
     <dl class="summary">
-      <div class="card"><dt>Picks</dt><dd>${s.hit}-${s.miss}</dd><small>${extras || 'wins - losses'}</small></div>
+      <div class="card"><dt>Picks hit</dt><dd>${s.hit}-${s.miss}</dd><small>${extras || 'wins - losses'}</small></div>
       <div class="card"><dt>Hit rate</dt><dd>${s.hit_rate == null ? '—' : pct(s.hit_rate)}</dd><small>${esc(leagues) || 'no graded picks yet'}</small></div>
-      <div class="card"><dt>Slips cashed</dt><dd>${s.slips_cashed} of ${s.slips}</dd><small>${s.sat_out ? `${s.sat_out} sat out` : 'suggested entries'}</small></div>
+      <div class="card"><dt>Slips won</dt><dd>${s.slips_cashed} of ${s.slips}</dd><small>${s.sat_out ? `${s.sat_out} sat out` : 'suggested entries'}</small></div>
       <div class="card"><dt>Slip P/L</dt><dd class="${plCls(s.slip_pl)}">${s.slips ? plStr(s.slip_pl) : '—'}</dd><small>at $${s.stake} each</small></div>
     </dl>` + learningPanel(h.model) + `<div class="section-label">Past slips</div>`;
   if (!h.days.length) html += '<div class="card empty"><strong>No slips yet</strong>Your first daily slip will show up here.</div>';
@@ -2413,9 +2744,8 @@ function renderRecord() {
     const decided = d.picks.filter(p => p.result === 'hit' || p.result === 'miss').length;
     const pending = d.picks.filter(p => !p.result).length;
     const label = new Date(d.date + 'T12:00').toLocaleDateString([], { weekday: 'short', month: 'short', day: 'numeric' });
-    const right = d.slip && d.slip.sat_out ? `<span class="muted">${hits}/${decided} · sat out</span>`
-      : d.slip ? `<span>${hits}/${decided} · <b class="${plCls(d.slip.pl)}">${plStr(d.slip.pl)}</b></span>`
-      : `<span class="muted">${hits}/${decided} · ${pending} pending</span>`;
+    const right = d.slip ? `<b class="${plCls(d.slip.pl)}" style="font-size:12.5px">${esc(explainSlip(d.slip))}</b>`
+      : `<span class="muted">${hits} of ${decided} hit · ${pending} playing</span>`;
     const rows = d.picks.map(p => {
       const lv = state.live[p.id];
       const actual = p.actual ?? (lv && lv.value != null ? lv.value : '—');
@@ -2424,8 +2754,8 @@ function renderRecord() {
         <td class="r">${p.line}</td><td><span class="${p.side === 'MORE' ? 'pos' : 'neg'}" style="font-weight:700;font-size:12px">${p.side}</span></td>
         <td class="r">${actual}</td><td class="r">${result}</td></tr>`;
     }).join('');
-    return `<details class="card fold" ${i === 0 ? 'open' : ''}><summary><div><b>${label}</b> <span class="faint" style="font-size:12px">${d.slip && !d.slip.sat_out ? esc(d.slip.type) : ''}</span></div>
-      <div style="display:flex;gap:10px;align-items:center;font-size:13px">${right}<span class="chev">›</span></div></summary>
+    return `<details class="card fold" ${i === 0 ? 'open' : ''}><summary><div><b>${label}</b><div style="margin-top:2px">${right}</div></div>
+      <span class="chev">›</span></summary>
       <div class="fold-body"><table class="results"><thead><tr><th>Player</th><th class="r">Line</th><th>Pick</th><th class="r">Actual</th><th class="r">Result</th></tr></thead><tbody>${rows}</tbody></table></div></details>`;
   }).join('');
   html += `<p class="footnote">Slip P/L assumes you played each day's suggested entry at $${s.stake}, and $0 on days it said to sit out. Players who don't play are voided and drop out, as on PrizePicks.</p>`;
@@ -2497,7 +2827,8 @@ function renderReport(r) {
   $('#report').querySelectorAll('[data-add]').forEach(b => b.addEventListener('click', () => {
     const id = `r|${r.sport}|${r.player.name}|${r.prop}`.toLowerCase();
     state.researched = state.researched.filter(p => p.id !== id).concat([{ id, player: r.player.name, league: r.sport, prop: r.prop,
-      line: r.line, side: b.dataset.add, prob: null, team: r.player.team }]);
+      line: r.line, side: b.dataset.add, prob: null, team: r.player.team, espn_id: r.player.id,
+      commence: r.next_game ? r.next_game.date : null, game: '' }]);
     if (!state.slip.includes(id)) togglePick(id); else render();
     toast(`${r.player.name} ${b.dataset.add} ${r.line} added to your slip`);
   }));
