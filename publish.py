@@ -87,6 +87,9 @@ def build_page():
               "leagues": [{"key": s["key"], "label": s["label"], "group": s["group"], "props": list(s["props"])}
                           for s in sa.SPORT_BY_KEY.values()]}
     page = sa.PAGE.replace("__CONFIG__", json.dumps(config))
+    page = page.replace("<title>Daily Slip</title>", "<title>Daily Slip</title>\n"
+                        '<link rel="apple-touch-icon" href="apple-touch-icon.png">\n'
+                        '<link rel="icon" type="image/png" href="favicon.png">', 1)
     hook = "<script>\nconst CONFIG = "
     assert page.count(hook) == 1
     page = page.replace(hook, f"<script>window.CLOUD_META = {json.dumps(page_meta())};</script>\n"
