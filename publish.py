@@ -31,7 +31,7 @@ from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
 ROOT = Path(__file__).resolve().parent
 DOCS = ROOT / "docs"
 BUNDLE = DOCS / "data.enc"
-FILES = ["today_best_pick.json", "pick_history.json", "model.json", "alerts.json"]
+FILES = ["today_best_pick.json", "pick_history.json", "model.json", "alerts.json", "odds_cache.json"]
 HASH_FILE = ROOT / ".data_hash"   # fingerprint of what was unlocked, to skip saving when nothing changed
 ITERATIONS = 310_000
 

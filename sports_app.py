@@ -474,11 +474,17 @@ class ScanError(Exception):
 
 def odds_get(path, **params):
     params["apiKey"] = ODDS_API_KEY
-    r = HTTP.get(f"{ODDS_URL}{path}", params=params, timeout=20)
+    for attempt in range(5):
+        r = HTTP.get(f"{ODDS_URL}{path}", params=params, timeout=20)
+        if r.status_code != 429:
+            break
+        if r.headers.get("x-requests-remaining") in ("0", "0.0"):
+            raise ScanError("Out of Odds API credits for this month.")
+        time.sleep(3 * (attempt + 1))         # rate-limited: back off and try again (free)
+    else:
+        raise ScanError("The Odds API kept rate-limiting requests. The next run will try again.")
     if r.status_code == 401:
         raise ScanError("Your ODDS_API_KEY was rejected. Check the key in your .env file.")
-    if r.status_code == 429:
-        raise ScanError("Out of Odds API credits (or rate-limited). Try again later.")
     if r.status_code in (404, 422):
         return None
     r.raise_for_status()
@@ -601,6 +607,8 @@ def injury_statuses(sport_key):
     try:
         data = get_json(f"{ESPN_SITE}/site/v2/sports/{s}/{l}/injuries")
     except (requests.RequestException, ValueError):
+        return {}
+    if not isinstance(data, dict):
         return {}
     out = {}
     for team in data.get("injuries", []):
@@ -814,6 +822,18 @@ def cold_areas():
     return {a["key"] for a in areas_report(load_history()) if a["cold"]}
 
 
+ODDS_CACHE_FILE = APP_DIR / "odds_cache.json"
+
+
+def load_odds_cache():
+    today = datetime.now().date().isoformat()
+    try:
+        c = json.loads(ODDS_CACHE_FILE.read_text())
+    except (OSError, ValueError):
+        c = {}
+    return c if c.get("date") == today else {"date": today, "data": {}}
+
+
 def scan_daily():
     if not ODDS_API_KEY:
         raise ScanError("ODDS_API_KEY not found. Put it in the .env file next to sports_app.py.")
@@ -859,15 +879,24 @@ def scan_daily():
     lines, pp_seen, spent, calls = [], False, 0, 0
     sports_with_lines, games_with_lines = set(), set()
     books = REF_BOOKS
+    paid = load_odds_cache()
     for sport, odds_key, e, (market_key, prop) in order:
         if spent >= DAILY_CREDIT_BUDGET or calls >= MAX_SCAN_CALLS:
             break
-        before = _quota["remaining"]
-        data = odds_get(f"/sports/{odds_key}/events/{e['id']}/odds",
-                        bookmakers=",".join(books + [PP_BOOK]),
-                        markets=market_key, oddsFormat="american")
-        calls += 1
-        cost = (before - _quota["remaining"]) if before is not None and _quota["remaining"] is not None else 1
+        cache_key = f"{e['id']}|{market_key}"
+        if cache_key in paid["data"]:               # already bought today: reuse, 0 credits
+            data, cost = paid["data"][cache_key], 0
+        else:
+            before = _quota["remaining"]
+            data = odds_get(f"/sports/{odds_key}/events/{e['id']}/odds",
+                            bookmakers=",".join(books + [PP_BOOK]),
+                            markets=market_key, oddsFormat="american")
+            calls += 1
+            time.sleep(0.4)                          # stay well under the API's request-rate limit
+            cost = (before - _quota["remaining"]) if before is not None and _quota["remaining"] is not None else 1
+            if data:
+                paid["data"][cache_key] = data
+                ODDS_CACHE_FILE.write_text(json.dumps(paid))
         spent += cost
         if cost > 1 and books is REF_BOOKS:
             books = FALLBACK_BOOKS          # 10 books cost extra after all: drop back to 2 for the rest
@@ -886,11 +915,17 @@ def scan_daily():
     lines.sort(key=lambda l: -l["market_p"])
     candidates = lines[:BOARD_ANALYZE_CAP]
     model = load_model()
-    injuries = {k: injury_statuses(k) for k in {c["sport"] for c in candidates}}
+    injuries = {}
+    for k in {c["sport"] for c in candidates}:
+        try:
+            injuries[k] = injury_statuses(k)
+        except Exception:
+            injuries[k] = {}                         # no injury report today: don't block the scan
     for c in candidates:
         try:
             rep = analyze(c["sport"], c["player"], c["prop"], c["line"])
-        except (ValueError, KeyError, requests.RequestException):
+        except Exception as err:                     # one bad line must never sink the scan
+            print(f"  skipped history for {c['player']} {c['prop']}: {type(err).__name__}")
             rep = None
         c["report"] = rep
         c["hist_p"], c["tier"] = None, None
@@ -902,7 +937,10 @@ def scan_daily():
         pid = str(((rep or {}).get("player") or {}).get("id", ""))
         status = injuries[c["sport"]].get(pid) or injuries[c["sport"]].get("name:" + normalize(c["player"]))
         c["injury"] = status if status and status.lower() not in SAFE_INJURY_STATUS else None
-        c["ctx"] = game_context(c, rep)
+        try:
+            c["ctx"] = game_context(c, rep)
+        except Exception:
+            c["ctx"] = {"flags": []}
         c["final_p"] = apply_model(c, model)
     board = [{
         "id": f"line|{c['sport']}|{c['player']}|{c['prop']}|{c['line']:g}".lower(),
@@ -3387,10 +3425,10 @@ if __name__ == "__main__":
         sys.exit()
     if "--auto" in sys.argv:               # what the cloud job runs every 15 minutes
         hour = datetime.now().hour
-        window = (11, 13) if 11 <= hour <= 13 else (15, 17) if 15 <= hour <= 17 else None
+        scan_hours = (11, 13) if 11 <= hour <= 13 else (15, 17) if 15 <= hour <= 17 else None
         d = load_daily()
-        tried = d and d.get("scanned_at") and window and window[0] <= int(d["scanned_at"][11:13]) <= window[1]
-        if window and not tried:
+        tried = d and d.get("scanned_at") and scan_hours and scan_hours[0] <= int(d["scanned_at"][11:13]) <= scan_hours[1]
+        if scan_hours and not tried:
             run_scheduled_scan()            # at most one paid attempt per window; 0 credits once locked
         else:
             grade_history()

@@ -5,6 +5,7 @@ today_best_pick.json
 pick_history.json
 model.json
 alerts.json
+odds_cache.json
 .data_hash
 *.log
 instance/
