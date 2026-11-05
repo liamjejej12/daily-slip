@@ -17,6 +17,7 @@ unless --prompt is given.
 
 import base64
 import getpass
+import hashlib
 import json
 import os
 import sys
@@ -30,7 +31,8 @@ from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
 ROOT = Path(__file__).resolve().parent
 DOCS = ROOT / "docs"
 BUNDLE = DOCS / "data.enc"
-FILES = ["today_best_pick.json", "pick_history.json", "model.json"]
+FILES = ["today_best_pick.json", "pick_history.json", "model.json", "alerts.json"]
+HASH_FILE = ROOT / ".data_hash"   # fingerprint of what was unlocked, to skip saving when nothing changed
 ITERATIONS = 310_000
 
 
@@ -97,6 +99,10 @@ def build_page():
     (DOCS / "index.html").write_text(page)
 
 
+def fingerprint(files):
+    return hashlib.sha256(json.dumps(files, sort_keys=True).encode()).hexdigest()
+
+
 def encrypt():
     pw = passphrase()
     files = {}
@@ -105,6 +111,10 @@ def encrypt():
             files[name] = json.loads((ROOT / name).read_text())
         except (OSError, ValueError):
             pass
+    if BUNDLE.exists() and HASH_FILE.exists() and HASH_FILE.read_text() == fingerprint(files) and "--prompt" not in sys.argv:
+        build_page()                       # nothing new: keep the old bundle so there's nothing to commit
+        print("No data changes; bundle left as is.")
+        return
     payload = json.dumps({"files": files, "view": view(files),
                           "published": datetime.now().isoformat(timespec="minutes")}).encode()
     salt = os.urandom(16)
@@ -131,8 +141,10 @@ def decrypt():
             base64.b64decode(b["iv"]), base64.b64decode(b["ct"]), None)
     except Exception:
         sys.exit("Couldn't decrypt docs/data.enc: the passphrase doesn't match.")
-    for name, content in json.loads(data)["files"].items():
+    files = json.loads(data)["files"]
+    for name, content in files.items():
         (ROOT / name).write_text(json.dumps(content))
+    HASH_FILE.write_text(fingerprint(files))
     print("Restored data files from docs/data.enc.")
 
 

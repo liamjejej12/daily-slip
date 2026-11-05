@@ -191,7 +191,7 @@ def game_log(sport, pid, season=None):
                 seen.add(eid)
                 m = meta.get(eid, {})
                 opp = m.get("opponent", {}) or {}
-                games.append({"date": m.get("gameDate", ""), "opp_id": str(opp.get("id", "")),
+                games.append({"event_id": str(eid), "date": m.get("gameDate", ""), "opp_id": str(opp.get("id", "")),
                               "opp": opp.get("abbreviation", ""), "at_vs": m.get("atVs", ""),
                               "row": dict(zip(names, ev.get("stats", [])))})
     games.sort(key=lambda g: g["date"], reverse=True)
@@ -1359,6 +1359,191 @@ def uninstall_server():
     print("Background dashboard removed.")
 
 
+# ───────── Injury news watcher (ESPN, free) ─────────
+ALERTS_FILE      = APP_DIR / "alerts.json"
+INJURY_LEAGUES   = ["NBA", "WNBA", "NFL", "NHL"]       # leagues ESPN publishes injury reports for
+OUT_STATUSES     = {"out", "doubtful"}
+# A ruled-out player matters if he averages at least one of these this season
+NOTABLE          = {"basketball": [("points", 12)], "hockey": [("points", 0.6), ("shotsTotal", 2.5)],
+                    "football": [("passingYards", 150), ("rushingYards", 45), ("receivingYards", 40)]}
+# Teammate stats compared with/without him, as (game-log stat, PrizePicks prop, minimum boost worth showing)
+BOOST_STATS      = {"basketball": [("points", "Points", 1.5), ("totalRebounds", "Rebounds", 1.0), ("assists", "Assists", 1.0)],
+                    "hockey": [("shotsTotal", "Shots on Goal", 0.4), ("points", "Points", 0.15)],
+                    "football": [("receivingYards", "Receiving Yards", 8), ("receptions", "Receptions", 0.8),
+                                 ("rushingYards", "Rush Yards", 10)]}
+MIN_SPLIT_GAMES  = 3
+
+
+def load_alerts():
+    try:
+        return json.loads(ALERTS_FILE.read_text())
+    except (OSError, ValueError):
+        return {"alerts": [], "seen": []}
+
+
+def season_values(sport, pid, stat):
+    """This season's values for one stat (newest first) and the event ids he played in."""
+    try:
+        games, _ = game_log(sport, pid)
+    except (requests.RequestException, ValueError):
+        return [], set()
+    vals, events = [], set()
+    for g in games:
+        try:
+            vals.append(float(g["row"][stat]))
+            events.add(g["event_id"])
+        except (KeyError, ValueError, TypeError):
+            pass
+    return vals, events
+
+
+def is_notable(sport_key, pid):
+    group = SPORT_BY_KEY[sport_key]["group"]
+    for stat, threshold in NOTABLE.get(group, []):
+        vals, _ = season_values(SPORT_BY_KEY[sport_key], pid, stat)
+        if vals and sum(vals) / len(vals) >= threshold:
+            return True
+    return False
+
+
+def teammate_boosts(sport_key, team_id, out_pid, skip_ids):
+    """Teammates whose numbers go up in games the ruled-out player missed this season."""
+    sport = SPORT_BY_KEY[sport_key]
+    s_, l_ = sport["path"]
+    stats = BOOST_STATS.get(sport["group"], [])
+    try:
+        roster = get_json(f"{ESPN_SITE}/site/v2/sports/{s_}/{l_}/teams/{team_id}/roster").get("athletes", [])
+    except (requests.RequestException, ValueError):
+        return [], []
+    if roster and "items" in roster[0]:                 # football rosters come grouped by unit
+        roster = [a for grp in roster for a in grp.get("items", [])]
+    try:
+        out_games, _ = game_log(sport, out_pid)
+    except (requests.RequestException, ValueError):
+        out_games = []
+    out_events = {g["event_id"] for g in out_games}
+    boosts, leaders = [], []
+    for a in roster:
+        aid = str(a.get("id", ""))
+        if not aid or aid == out_pid or aid in skip_ids:
+            continue
+        try:
+            games, _ = game_log(sport, aid)
+        except (requests.RequestException, ValueError):
+            continue
+        if not games:
+            continue
+        for stat, prop, min_boost in stats:
+            with_, without = [], []
+            for g in games:
+                try:
+                    v = float(g["row"][stat])
+                except (KeyError, ValueError, TypeError):
+                    continue
+                (with_ if g["event_id"] in out_events else without).append(v)
+            if not with_ and not without:
+                continue
+            avg_all = sum(with_ + without) / len(with_ + without)
+            leaders.append({"player": a.get("displayName", ""), "espn_id": aid, "prop": prop, "avg": round(avg_all, 1)})
+            if len(with_) >= MIN_SPLIT_GAMES and len(without) >= MIN_SPLIT_GAMES:
+                aw, ao = sum(with_) / len(with_), sum(without) / len(without)
+                if ao - aw >= min_boost:
+                    boosts.append({"player": a.get("displayName", ""), "espn_id": aid, "prop": prop,
+                                   "with": round(aw, 1), "without": round(ao, 1), "games_without": len(without),
+                                   "boost": round(ao - aw, 1)})
+    boosts.sort(key=lambda b: -b["boost"] / max(b["with"], 1))
+    first_prop = stats[0][1] if stats else None
+    leaders = sorted((x for x in leaders if x["prop"] == first_prop), key=lambda x: -x["avg"])[:3]
+    return boosts[:4], leaders
+
+
+def todays_games(sport_key):
+    """{team_id: {opp, start}} for games today (Eastern) that haven't started."""
+    s_, l_ = SPORT_BY_KEY[sport_key]["path"]
+    try:
+        sb = get_json(f"{ESPN_SITE}/site/v2/sports/{s_}/{l_}/scoreboard", _ttl=300,
+                      dates=datetime.now().strftime("%Y%m%d"))
+    except (requests.RequestException, ValueError):
+        return {}
+    out = {}
+    for e in sb.get("events", []):
+        try:
+            if e["status"]["type"]["state"] != "pre":
+                continue
+            teams = e["competitions"][0]["competitors"]
+        except (KeyError, IndexError):
+            continue
+        for c in teams:
+            other = next(o for o in teams if o is not c)
+            out[str(c["team"]["id"])] = {"opp": other["team"].get("abbreviation", ""), "home": c.get("homeAway") == "home",
+                                         "start": e.get("date")}
+    return out
+
+
+def check_injuries():
+    """New 'Out'/'Doubtful' news today for notable players whose team still plays today -> alert with
+    the teammates who gain the most without him. Uses ESPN only, so it never spends Odds API credits."""
+    state = load_alerts()
+    seen = set(state.get("seen", []))
+    today = datetime.now().date().isoformat()
+    daily = load_daily() or {}
+    slip_players = {normalize(p["player"]) for p in daily.get("picks", [])}
+    new = []
+    for key in INJURY_LEAGUES:
+        playing = todays_games(key)
+        if not playing:
+            continue
+        s_, l_ = SPORT_BY_KEY[key]["path"]
+        try:
+            report = get_json(f"{ESPN_SITE}/site/v2/sports/{s_}/{l_}/injuries", _ttl=300)
+        except (requests.RequestException, ValueError):
+            continue
+        out_ids = {}
+        for team in report.get("injuries", []):
+            for i in team.get("injuries", []):
+                if (i.get("status") or "").lower() in OUT_STATUSES:
+                    m = re.search(r"/id/(\d+)", ((i.get("athlete") or {}).get("links") or [{}])[0].get("href", ""))
+                    if m:
+                        out_ids[m.group(1)] = True
+        for team in report.get("injuries", []):
+            team_id = str(team.get("id", ""))
+            if team_id not in playing:
+                continue
+            for i in team.get("injuries", []):
+                status = (i.get("status") or "")
+                if status.lower() not in OUT_STATUSES:
+                    continue
+                try:
+                    updated = parse_date(i["date"]).astimezone().date().isoformat()
+                except (KeyError, ValueError):
+                    continue
+                a = i.get("athlete") or {}
+                m = re.search(r"/id/(\d+)", ((a.get("links") or [{}])[0]).get("href", ""))
+                if updated != today or not m:
+                    continue
+                pid, tag = m.group(1), f"{today}|{m.group(1)}|{status}"
+                if tag in seen:
+                    continue
+                seen.add(tag)
+                if not is_notable(key, pid):
+                    continue
+                boosts, leaders = teammate_boosts(key, team_id, pid, set(out_ids))
+                g = playing[team_id]
+                new.append({
+                    "id": tag, "date": today, "time": datetime.now().isoformat(timespec="minutes"), "league": key,
+                    "player": a.get("displayName", ""), "team": (a.get("team") or {}).get("abbreviation", "") or team.get("displayName", ""),
+                    "status": status, "note": i.get("shortComment", ""),
+                    "game": f"{'vs' if g['home'] else '@'} {g['opp']}", "start": g["start"],
+                    "in_slip": normalize(a.get("displayName", "")) in slip_players,
+                    "teammates": boosts, "leaders": [] if boosts else leaders,
+                })
+    keep_from = (datetime.now() - timedelta(days=2)).date().isoformat()
+    state["alerts"] = [x for x in new + state.get("alerts", []) if x["date"] >= keep_from]
+    state["seen"] = sorted(t for t in seen if t[:10] >= keep_from)
+    ALERTS_FILE.write_text(json.dumps(state))
+    return new
+
+
 def uninstall_schedule():
     subprocess.run(["launchctl", "unload", str(SCHEDULE_PLIST)], capture_output=True)
     SCHEDULE_PLIST.unlink(missing_ok=True)
@@ -1637,6 +1822,12 @@ def api_grade():
     return jsonify(out)
 
 
+@app.get("/api/alerts")
+def api_alerts():
+    today = datetime.now().date().isoformat()
+    return jsonify({"alerts": [a for a in load_alerts().get("alerts", []) if a["date"] == today]})
+
+
 @app.get("/api/history")
 def api_history():
     """Grades finished games (ESPN, free), then returns every saved slip plus the overall record."""
@@ -1791,6 +1982,16 @@ PAGE = r'''<!doctype html>
   .res { font-size: 11px; font-weight: 700; letter-spacing: 0.05em; padding: 3px 8px; border-radius: 6px; white-space: nowrap; }
   .res.hit { color: var(--pos); background: var(--pos-bg); } .res.miss { color: var(--neg); background: var(--neg-bg); }
   .res.push, .res.void, .res.pending { color: var(--muted); background: rgba(148, 163, 184, 0.12); }
+
+  /* Injury alerts */
+  .alert { padding: 14px; margin-bottom: 12px; border-color: rgba(240, 113, 120, 0.35); }
+  .alert-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+  .alert-head .out { color: var(--neg); background: var(--neg-bg); font-size: 11px; font-weight: 800; letter-spacing: 0.05em; padding: 3px 8px; border-radius: 6px; }
+  .alert-head b { font-size: 15px; }
+  .alert .note { color: var(--muted); font-size: 12.5px; margin: 6px 0 8px; }
+  .alert-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 10px; align-items: center; padding: 8px 0; border-top: 1px solid var(--border); font-size: 13px; }
+  .alert-row .who { font-weight: 600; } .alert-row .why { color: var(--muted); font-size: 12px; margin: 0; }
+  .alert-row .btn { padding: 6px 11px; font-size: 12.5px; }
 
   /* Hero: today's best play */
   .hero { position: relative; padding: 18px; border-radius: 18px; overflow: hidden; margin-bottom: 18px;
@@ -2017,7 +2218,7 @@ const state = {
   researched: store.get('ps_researched', []), slip: store.get('ps_slip', []),
   mode: store.get('ps_mode', 'flex'), stake: store.get('ps_stake', 10), filter: 'all',
   view: 'today', history: null, results: {}, live: {}, editing: null, lineMsg: null, open: null,
-  saved: store.get('ps_saved', []), savedLive: {}, recordTab: null
+  saved: store.get('ps_saved', []), savedLive: {}, recordTab: null, alerts: []
 };
 function persist() {
   store.set('ps_researched', state.researched); store.set('ps_slip', state.slip);
@@ -2257,11 +2458,43 @@ function pickRow(p) {
     </div>
   </article>`;
 }
+/* ───────── Injury alerts ───────── */
+async function loadAlerts() {
+  try { state.alerts = (await fetch('/api/alerts').then(r => r.json())).alerts || []; render(); } catch (e) {}
+}
+function alertCards() {
+  if (!state.alerts.length) return '';
+  return `<div class="section-label" style="margin-top:0">Injury news · ${state.alerts.length}</div>` + state.alerts.map(a => {
+    const when = new Date(a.time).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
+    const rows = (a.teammates || []).map(t => `<div class="alert-row"><div><div class="who">${esc(t.player)} · ${esc(t.prop)}</div>
+        <p class="why">${t.without} without him vs ${t.with} with (${t.games_without} games)</p></div>
+        <button class="btn" data-research='${esc(JSON.stringify({ league: a.league, player: t.player, prop: t.prop }))}'>Research</button></div>`).join('')
+      || (a.leaders || []).map(t => `<div class="alert-row"><div><div class="who">${esc(t.player)} · ${esc(t.prop)}</div>
+        <p class="why">Season avg ${t.avg}. No games without him yet to compare.</p></div>
+        <button class="btn" data-research='${esc(JSON.stringify({ league: a.league, player: t.player, prop: t.prop }))}'>Research</button></div>`).join('');
+    return `<div class="card alert">
+      <div class="alert-head"><span class="out">${esc(a.status.toUpperCase())}</span><b>${esc(a.player)}</b>
+        <span class="muted" style="font-size:12.5px">${esc(a.team)} · ${esc(a.game)}${a.start ? ' ' + new Date(a.start).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' }) : ''} · news ${when}</span></div>
+      ${a.note ? `<p class="note">${esc(a.note)}</p>` : ''}
+      ${a.in_slip ? `<p class="note neg" style="font-weight:600">He's in today's picks; that leg will be voided if he sits.</p>` : ''}
+      ${rows ? `<div class="faint" style="font-size:11.5px;margin-bottom:2px">Teammates to check on PrizePicks before their lines move:</div>${rows}` : ''}
+    </div>`;
+  }).join('');
+}
+function openResearch(league, player, prop) {
+  state.view = 'research'; render(); window.scrollTo(0, 0);
+  if (LEAGUE[league]) { $('#league').value = league; fillProps(); }
+  $('#player').value = player; playerIds = {};
+  if ([...$('#prop').options].some(o => o.value === prop)) $('#prop').value = prop;
+  $('#lineInput').value = ''; $('#lineInput').focus();
+  toast('Enter the PrizePicks line you see, then Analyze');
+}
+
 function renderToday() {
   const el = $('#view-today'), d = state.daily;
   if (state.loading) { el.innerHTML = `<div class="card empty"><span class="spinner"></span>&nbsp; Scanning today's slate…</div>`; return; }
   if (state.dailyError) {
-    el.innerHTML = `<div class="card empty"><strong>${esc(state.dailyErrorTitle || "Scan didn't finish")}</strong>${esc(state.dailyError)}
+    el.innerHTML = alertCards() + `<div class="card empty"><strong>${esc(state.dailyErrorTitle || "Scan didn't finish")}</strong>${esc(state.dailyError)}
       ${state.noRetry ? '' : '<div style="margin-top:12px"><button class="btn" data-scan>Try again</button></div>'}</div>`;
     return;
   }
@@ -2282,7 +2515,7 @@ function renderToday() {
   const shown = picks.filter(p => state.filter === 'all' || p.sport === state.filter);
   const extras = [`${d.lines_compared} lines`, `${d.games_scanned} games`, d.books_used ? `${d.books_used} books` : null,
                   d.injured_skipped ? `${d.injured_skipped} injured skipped` : null].filter(Boolean).join(' · ');
-  el.innerHTML = heroCard()
+  el.innerHTML = alertCards() + heroCard()
     + (state.lineMsg ? `<div class="card notice">${esc(state.lineMsg)}</div>` : '')
     + `<div style="display:flex;justify-content:space-between;align-items:end;gap:10px;margin-bottom:10px">
          <div><h2 class="h2">Today's picks</h2><div class="faint" style="font-size:12px">${esc(extras)}${d.pp_matched ? '' : ' · confirm lines in the app'}</div></div>
@@ -2293,6 +2526,8 @@ function renderToday() {
     + `<p class="footnote">Est. win blends up to 9 sportsbooks with the player's hit rate on this line. Injured players are skipped. Estimates, not guarantees; check each line in PrizePicks before entering.</p>`;
 }
 $('#view-today').addEventListener('click', e => {
+  const rs = e.target.closest('[data-research]');
+  if (rs) { const r = JSON.parse(rs.dataset.research); openResearch(r.league, r.player, r.prop); return; }
   if (e.target.closest('.line-tools')) return lineToolsClick(e);
   if (e.target.closest('[data-scan]')) return loadDaily(true);
   const go = e.target.closest('[data-goto]'); if (go) { state.view = go.dataset.goto; render(); window.scrollTo(0, 0); return; }
@@ -2534,6 +2769,7 @@ async function loadLive() {
     if (Object.values(state.live).some(l => l.state === 'in')) next = 30 * 1000;
     if (Object.values(state.live).some(l => l.state === 'post') && state.history) loadHistory();
     gradeSaved();
+    loadAlerts();
     render();
   } catch (e) {}
   liveTimer = setTimeout(loadLive, next);
@@ -2856,7 +3092,7 @@ function render() {
   if (state.view === 'record') renderRecord();
   persist();
 }
-fillLeagues(); render(); loadDaily(false); loadHistory(); loadLive();
+fillLeagues(); render(); loadDaily(false); loadHistory(); loadLive(); loadAlerts();
 setInterval(loadHistory, 10 * 60 * 1000);
 </script>
 </body>
@@ -2892,6 +3128,23 @@ if __name__ == "__main__":
         sys.exit()
     if "--scan" in sys.argv:
         run_scheduled_scan()
+        sys.exit()
+    if "--auto" in sys.argv:               # what the cloud job runs every 15 minutes
+        hour = datetime.now().hour
+        window = (11, 13) if 11 <= hour <= 13 else (15, 17) if 15 <= hour <= 17 else None
+        d = load_daily()
+        tried = d and d.get("scanned_at") and window and window[0] <= int(d["scanned_at"][11:13]) <= window[1]
+        if window and not tried:
+            run_scheduled_scan()            # at most one paid attempt per window; 0 credits once locked
+        else:
+            grade_history()
+            fit_model(load_history())
+        if hour >= 9 or hour <= 1:
+            for a in check_injuries():
+                print(f"[{datetime.now():%H:%M}] Injury alert: {a['player']} ({a['team']}) {a['status']}, {len(a['teammates'])} teammates to check")
+        sys.exit()
+    if "--watch" in sys.argv:              # injury news only (free)
+        print(f"{len(check_injuries())} new injury alert(s)")
         sys.exit()
     if "--grade" in sys.argv:              # results + learning only, never spends credits
         grade_history()

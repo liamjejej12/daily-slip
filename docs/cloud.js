@@ -589,7 +589,7 @@
     const route = url.pathname.replace(/^.*\/api\//, '');
     const body = opts && opts.body ? JSON.parse(opts.body) : {};
     await ready;
-    if (['daily', 'history', 'live', 'grade'].includes(route)) await refresh(false);
+    if (['daily', 'history', 'live', 'grade', 'alerts'].includes(route)) await refresh(false);
     switch (route) {
       case 'daily': {
         const d = currentDaily();
@@ -607,6 +607,7 @@
         return json(v);
       }
       case 'live': return json(await livePicks());
+      case 'alerts': return json({ alerts: ((data.files['alerts.json'] || {}).alerts || []).filter(a => a.date === todayET()) });
       case 'grade': {
         const out = {};
         await Promise.all((body.legs || []).slice(0, 40).map(async leg => {

@@ -2,19 +2,17 @@ name: Daily Slip
 
 on:
   schedule:
-    # GitHub schedules run in UTC. Both hours are listed so 11 AM / 3 PM Eastern works in
-    # summer and winter; once the day's slip is locked, the extra run costs 0 credits.
-    - cron: "0 15,16 * * *"     # morning scan (11 AM Eastern)
-    - cron: "0 19,20 * * *"     # retry if lines weren't posted yet (3 PM Eastern)
-    - cron: "*/30 0-6 * * *"    # grade results during evening games
-    - cron: "0 9 * * *"         # final grading pass
+    # GitHub schedules run in UTC; the app works out Eastern time itself.
+    - cron: "*/15 14-23 * * *"   # daytime: 11 AM / 3 PM scan windows + injury news every 15 min
+    - cron: "*/15 0-6 * * *"     # evening: grade games + injury news every 15 min
+    - cron: "0 9 * * *"          # final grading pass
   workflow_dispatch:
     inputs:
       mode:
-        description: "scan (spends credits if today isn't locked) or grade (free)"
-        default: grade
+        description: "auto (normal), grade (free), watch (injury news, free) or scan (spends credits if today isn't locked)"
+        default: auto
         type: choice
-        options: [grade, scan]
+        options: [auto, grade, watch, scan]
 
 permissions:
   contents: write
@@ -44,16 +42,8 @@ jobs:
       - name: Unlock data
         run: python publish.py decrypt
 
-      - name: Scan or grade
-        run: |
-          MODE="${{ github.event.inputs.mode }}"
-          HOUR=$(date +%H)
-          if [ -z "$MODE" ]; then
-            # Scan 11 AM-1 PM or 3-5 PM Eastern (allows for GitHub running late); grade otherwise
-            H=$((10#$HOUR))
-            if { [ $H -ge 11 ] && [ $H -le 13 ]; } || { [ $H -ge 15 ] && [ $H -le 17 ]; }; then MODE=scan; else MODE=grade; fi
-          fi
-          python sports_app.py --$MODE
+      - name: Scan, grade and watch injuries
+        run: python sports_app.py --${{ github.event.inputs.mode || 'auto' }}
 
       - name: Lock data and rebuild page
         run: python publish.py encrypt

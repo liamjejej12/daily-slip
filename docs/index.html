@@ -98,6 +98,16 @@
   .res.hit { color: var(--pos); background: var(--pos-bg); } .res.miss { color: var(--neg); background: var(--neg-bg); }
   .res.push, .res.void, .res.pending { color: var(--muted); background: rgba(148, 163, 184, 0.12); }
 
+  /* Injury alerts */
+  .alert { padding: 14px; margin-bottom: 12px; border-color: rgba(240, 113, 120, 0.35); }
+  .alert-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+  .alert-head .out { color: var(--neg); background: var(--neg-bg); font-size: 11px; font-weight: 800; letter-spacing: 0.05em; padding: 3px 8px; border-radius: 6px; }
+  .alert-head b { font-size: 15px; }
+  .alert .note { color: var(--muted); font-size: 12.5px; margin: 6px 0 8px; }
+  .alert-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 10px; align-items: center; padding: 8px 0; border-top: 1px solid var(--border); font-size: 13px; }
+  .alert-row .who { font-weight: 600; } .alert-row .why { color: var(--muted); font-size: 12px; margin: 0; }
+  .alert-row .btn { padding: 6px 11px; font-size: 12.5px; }
+
   /* Hero: today's best play */
   .hero { position: relative; padding: 18px; border-radius: 18px; overflow: hidden; margin-bottom: 18px;
     background: linear-gradient(160deg, #17213a, #0f1627 60%); border: 1px solid transparent;
@@ -325,7 +335,7 @@ const state = {
   researched: store.get('ps_researched', []), slip: store.get('ps_slip', []),
   mode: store.get('ps_mode', 'flex'), stake: store.get('ps_stake', 10), filter: 'all',
   view: 'today', history: null, results: {}, live: {}, editing: null, lineMsg: null, open: null,
-  saved: store.get('ps_saved', []), savedLive: {}, recordTab: null
+  saved: store.get('ps_saved', []), savedLive: {}, recordTab: null, alerts: []
 };
 function persist() {
   store.set('ps_researched', state.researched); store.set('ps_slip', state.slip);
@@ -565,11 +575,43 @@ function pickRow(p) {
     </div>
   </article>`;
 }
+/* ───────── Injury alerts ───────── */
+async function loadAlerts() {
+  try { state.alerts = (await fetch('/api/alerts').then(r => r.json())).alerts || []; render(); } catch (e) {}
+}
+function alertCards() {
+  if (!state.alerts.length) return '';
+  return `<div class="section-label" style="margin-top:0">Injury news · ${state.alerts.length}</div>` + state.alerts.map(a => {
+    const when = new Date(a.time).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
+    const rows = (a.teammates || []).map(t => `<div class="alert-row"><div><div class="who">${esc(t.player)} · ${esc(t.prop)}</div>
+        <p class="why">${t.without} without him vs ${t.with} with (${t.games_without} games)</p></div>
+        <button class="btn" data-research='${esc(JSON.stringify({ league: a.league, player: t.player, prop: t.prop }))}'>Research</button></div>`).join('')
+      || (a.leaders || []).map(t => `<div class="alert-row"><div><div class="who">${esc(t.player)} · ${esc(t.prop)}</div>
+        <p class="why">Season avg ${t.avg}. No games without him yet to compare.</p></div>
+        <button class="btn" data-research='${esc(JSON.stringify({ league: a.league, player: t.player, prop: t.prop }))}'>Research</button></div>`).join('');
+    return `<div class="card alert">
+      <div class="alert-head"><span class="out">${esc(a.status.toUpperCase())}</span><b>${esc(a.player)}</b>
+        <span class="muted" style="font-size:12.5px">${esc(a.team)} · ${esc(a.game)}${a.start ? ' ' + new Date(a.start).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' }) : ''} · news ${when}</span></div>
+      ${a.note ? `<p class="note">${esc(a.note)}</p>` : ''}
+      ${a.in_slip ? `<p class="note neg" style="font-weight:600">He's in today's picks; that leg will be voided if he sits.</p>` : ''}
+      ${rows ? `<div class="faint" style="font-size:11.5px;margin-bottom:2px">Teammates to check on PrizePicks before their lines move:</div>${rows}` : ''}
+    </div>`;
+  }).join('');
+}
+function openResearch(league, player, prop) {
+  state.view = 'research'; render(); window.scrollTo(0, 0);
+  if (LEAGUE[league]) { $('#league').value = league; fillProps(); }
+  $('#player').value = player; playerIds = {};
+  if ([...$('#prop').options].some(o => o.value === prop)) $('#prop').value = prop;
+  $('#lineInput').value = ''; $('#lineInput').focus();
+  toast('Enter the PrizePicks line you see, then Analyze');
+}
+
 function renderToday() {
   const el = $('#view-today'), d = state.daily;
   if (state.loading) { el.innerHTML = `<div class="card empty"><span class="spinner"></span>&nbsp; Scanning today's slate…</div>`; return; }
   if (state.dailyError) {
-    el.innerHTML = `<div class="card empty"><strong>${esc(state.dailyErrorTitle || "Scan didn't finish")}</strong>${esc(state.dailyError)}
+    el.innerHTML = alertCards() + `<div class="card empty"><strong>${esc(state.dailyErrorTitle || "Scan didn't finish")}</strong>${esc(state.dailyError)}
       ${state.noRetry ? '' : '<div style="margin-top:12px"><button class="btn" data-scan>Try again</button></div>'}</div>`;
     return;
   }
@@ -590,7 +632,7 @@ function renderToday() {
   const shown = picks.filter(p => state.filter === 'all' || p.sport === state.filter);
   const extras = [`${d.lines_compared} lines`, `${d.games_scanned} games`, d.books_used ? `${d.books_used} books` : null,
                   d.injured_skipped ? `${d.injured_skipped} injured skipped` : null].filter(Boolean).join(' · ');
-  el.innerHTML = heroCard()
+  el.innerHTML = alertCards() + heroCard()
     + (state.lineMsg ? `<div class="card notice">${esc(state.lineMsg)}</div>` : '')
     + `<div style="display:flex;justify-content:space-between;align-items:end;gap:10px;margin-bottom:10px">
          <div><h2 class="h2">Today's picks</h2><div class="faint" style="font-size:12px">${esc(extras)}${d.pp_matched ? '' : ' · confirm lines in the app'}</div></div>
@@ -601,6 +643,8 @@ function renderToday() {
     + `<p class="footnote">Est. win blends up to 9 sportsbooks with the player's hit rate on this line. Injured players are skipped. Estimates, not guarantees; check each line in PrizePicks before entering.</p>`;
 }
 $('#view-today').addEventListener('click', e => {
+  const rs = e.target.closest('[data-research]');
+  if (rs) { const r = JSON.parse(rs.dataset.research); openResearch(r.league, r.player, r.prop); return; }
   if (e.target.closest('.line-tools')) return lineToolsClick(e);
   if (e.target.closest('[data-scan]')) return loadDaily(true);
   const go = e.target.closest('[data-goto]'); if (go) { state.view = go.dataset.goto; render(); window.scrollTo(0, 0); return; }
@@ -842,6 +886,7 @@ async function loadLive() {
     if (Object.values(state.live).some(l => l.state === 'in')) next = 30 * 1000;
     if (Object.values(state.live).some(l => l.state === 'post') && state.history) loadHistory();
     gradeSaved();
+    loadAlerts();
     render();
   } catch (e) {}
   liveTimer = setTimeout(loadLive, next);
@@ -1164,7 +1209,7 @@ function render() {
   if (state.view === 'record') renderRecord();
   persist();
 }
-fillLeagues(); render(); loadDaily(false); loadHistory(); loadLive();
+fillLeagues(); render(); loadDaily(false); loadHistory(); loadLive(); loadAlerts();
 setInterval(loadHistory, 10 * 60 * 1000);
 </script>
 </body>
