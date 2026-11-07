@@ -1142,8 +1142,9 @@ function suggestionsPanel(rows) {
 }
 function areasPanel(areas) {
   if (!areas || !areas.length) return '';
-  const rows = areas.filter(a => a.n >= 3).slice(0, 12).map(a => `<tr>
-      <td>${esc(leagueLabel(a.sport))} ${esc(a.prop)} <span class="${a.side === 'MORE' ? 'pos' : 'neg'}" style="font-weight:700;font-size:11px">${a.side}</span>
+  const rows = areas.filter(a => a.n >= 3).slice(0, 14).map(a => `<tr>
+      <td>${esc(leagueLabel(a.sport))} ${esc(a.prop)} ${a.side === '*' ? '<span class="faint" style="font-size:11px">both sides</span>'
+        : `<span class="${a.side === 'MORE' ? 'pos' : 'neg'}" style="font-weight:700;font-size:11px">${a.side}</span>`}
         ${a.cold ? ' <span class="res miss">SKIPPED</span>' : ''}</td>
       <td class="r ${a.hit_rate >= a.expected ? 'pos' : 'neg'}">${Math.round(a.hit_rate * 100)}%</td>
       <td class="r faint">${Math.round(a.expected * 100)}%</td><td class="r faint">${a.n}</td></tr>`).join('');
@@ -1153,7 +1154,7 @@ function areasPanel(areas) {
     <div class="fold-body" style="padding:10px 14px 14px">
       <table><thead><tr><th>Area</th><th class="r">Hit</th><th class="r">Expected</th><th class="r">Lines</th></tr></thead>
       <tbody>${rows || '<tr><td colspan="4" class="faint">Not enough graded lines yet.</td></tr>'}</tbody></table>
-      <p class="faint" style="font-size:12px;margin:10px 0 0">An area is skipped automatically once it has ${40}+ graded lines, hits under 50%, and runs 5+ points below what was expected.</p>
+      <p class="faint" style="font-size:12px;margin:10px 0 0">An area (one side, or both sides of a prop together) is skipped automatically once it has 40+ graded lines, hits under 50%, and runs 5+ points below what was expected.</p>
     </div></details>`;
 }
 function renderRecord() {

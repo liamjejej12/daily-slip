@@ -494,7 +494,8 @@
   function bestEntry(picks) {
     let best = null;
     const shrink = entryShrink();
-    for (let n = 2; n <= picks.length; n++) {
+    const maxLegs = (learned().entry || {}).active ? 6 : 5;     // as in sports_app.py
+    for (let n = 2; n <= Math.min(picks.length, maxLegs); n++) {
       const legs = picks.slice(0, n);
       const teams = new Set(legs.map(p => ((p.report || {}).player || {}).team || p.game + p.player));
       if (teams.size < 2) continue;
@@ -513,7 +514,8 @@
     const existing = {};
     for (const p of d.picks || []) existing[`${p.sport}|${p.player}|${p.prop}`] = p;
     const cold = new Set(((data.view || {}).areas || []).filter(a => a.cold).map(a => a.key));
-    const pool = d.board.filter(b => !b.injury && !b.pulled && b.final_p >= 0.5 && !cold.has(`${b.sport}|${b.prop}|${b.side}`))
+    const pool = d.board.filter(b => !b.injury && !b.pulled && b.final_p >= 0.5
+        && !cold.has(`${b.sport}|${b.prop}|${b.side}`) && !cold.has(`${b.sport}|${b.prop}|*`))
       .sort((a, b) => b.final_p - a.final_p);
     const picks = [], players = new Set(), perGame = {}, cap = maxPerGame();
     for (const b of pool) {

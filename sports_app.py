@@ -648,8 +648,10 @@ def entry_ev(probs, kind):
 def best_entry(picks):
     """Highest-EV entry from the top 2 to 6 picks; sit out when nothing clears MIN_ENTRY_EV."""
     shrink = entry_shrink()
+    # 6 legs magnifies any overconfidence; allow it only once entry sizing has been learned from results
+    max_legs = 6 if (load_model().get("entry") or {}).get("active") else 5
     best = None
-    for n in range(2, len(picks) + 1):
+    for n in range(2, min(len(picks), max_legs) + 1):
         legs = picks[:n]
         teams = {((p.get("report") or {}).get("player") or {}).get("team") or p["game"] + p["player"] for p in legs}
         if len(teams) < 2:
@@ -804,10 +806,19 @@ def graded_rows(h):
     return rows
 
 
+def prop_key(c):
+    return f"{c['sport']}|{c['prop']}|*"            # both sides of a prop together
+
+
+def is_cold(c, cold):
+    return area_key(c) in cold or prop_key(c) in cold
+
+
 def areas_report(h):
     groups = {}
     for r in graded_rows(h):
         groups.setdefault(area_key(r), []).append(r)
+        groups.setdefault(prop_key(r), []).append(r)
     out = []
     for k, rs in groups.items():
         sport, prop, side = k.split("|")
@@ -864,7 +875,11 @@ def scan_daily():
     # 2. Order purchases so every sport gets scanned: each sport's games take turns,
     #    main market on every game before any second market.
     queues = {sport: [] for sport in games_by_sport}
-    for rank in range(max(len(item[4]) for item in slate)):
+    cold = cold_areas()                      # don't spend credits on props it has stopped picking
+    slate = [(prio, start, odds_key, sport, [m for m in markets if f"{sport}|{m[1]}|*" not in cold], e)
+             for prio, start, odds_key, sport, markets, e in slate]
+    slate = [item for item in slate if item[4]]
+    for rank in range(max((len(item[4]) for item in slate), default=0)):
         for _, _, odds_key, sport, markets, e in slate:
             if rank < len(markets):
                 queues[sport].append((odds_key, e, markets[rank]))
@@ -960,7 +975,7 @@ def scan_daily():
             break                      # never fill the slip with a pick it expects to lose
         if c["injury"]:
             continue                   # listed on the injury report: skip
-        if area_key(c) in cold:
+        if is_cold(c, cold):
             continue                   # an area with a proven losing record: skip
         if c["player"] in players or per_game.get(c["game"], 0) >= game_cap:
             continue
@@ -1581,7 +1596,7 @@ def rebuild_picks(d, reports=None):
     existing = {(p["sport"], p["player"], p["prop"]): p for p in d.get("picks", [])}
     cold = cold_areas()
     pool = sorted((b for b in d["board"] if not b.get("injury") and not b.get("pulled") and b["final_p"] >= 0.5
-                   and area_key(b) not in cold), key=lambda b: -b["final_p"])
+                   and not is_cold(b, cold)), key=lambda b: -b["final_p"])
     picks, players, per_game, game_cap = [], set(), {}, max_per_game()
     for b in pool:
         if b["player"] in players or per_game.get(b["game"], 0) >= game_cap:
@@ -3379,8 +3394,9 @@ function suggestionsPanel(rows) {
 }
 function areasPanel(areas) {
   if (!areas || !areas.length) return '';
-  const rows = areas.filter(a => a.n >= 3).slice(0, 12).map(a => `<tr>
-      <td>${esc(leagueLabel(a.sport))} ${esc(a.prop)} <span class="${a.side === 'MORE' ? 'pos' : 'neg'}" style="font-weight:700;font-size:11px">${a.side}</span>
+  const rows = areas.filter(a => a.n >= 3).slice(0, 14).map(a => `<tr>
+      <td>${esc(leagueLabel(a.sport))} ${esc(a.prop)} ${a.side === '*' ? '<span class="faint" style="font-size:11px">both sides</span>'
+        : `<span class="${a.side === 'MORE' ? 'pos' : 'neg'}" style="font-weight:700;font-size:11px">${a.side}</span>`}
         ${a.cold ? ' <span class="res miss">SKIPPED</span>' : ''}</td>
       <td class="r ${a.hit_rate >= a.expected ? 'pos' : 'neg'}">${Math.round(a.hit_rate * 100)}%</td>
       <td class="r faint">${Math.round(a.expected * 100)}%</td><td class="r faint">${a.n}</td></tr>`).join('');
@@ -3390,7 +3406,7 @@ function areasPanel(areas) {
     <div class="fold-body" style="padding:10px 14px 14px">
       <table><thead><tr><th>Area</th><th class="r">Hit</th><th class="r">Expected</th><th class="r">Lines</th></tr></thead>
       <tbody>${rows || '<tr><td colspan="4" class="faint">Not enough graded lines yet.</td></tr>'}</tbody></table>
-      <p class="faint" style="font-size:12px;margin:10px 0 0">An area is skipped automatically once it has ${40}+ graded lines, hits under 50%, and runs 5+ points below what was expected.</p>
+      <p class="faint" style="font-size:12px;margin:10px 0 0">An area (one side, or both sides of a prop together) is skipped automatically once it has 40+ graded lines, hits under 50%, and runs 5+ points below what was expected.</p>
     </div></details>`;
 }
 function renderRecord() {
