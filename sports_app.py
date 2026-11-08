@@ -2538,6 +2538,7 @@ PAGE = r'''<!doctype html>
       <nav class="tabs" id="tabs">
         <button data-view="today"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M4 20V10M10 20V4M16 20v-7M22 20H2"/></svg>Today</button>
         <button data-view="slip"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 3h14v18l-3-2-2 2-2-2-2 2-2-2-3 2z"/><path d="M9 8h6M9 12h6"/></svg>Slip<span class="badge" id="slipBadge" hidden></span></button>
+        <button data-view="news"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 5h13v14H6a2 2 0 0 1-2-2z"/><path d="M17 9h3v8a2 2 0 0 1-2 2"/><path d="M8 9h5M8 13h5"/></svg>News<span class="badge" id="newsBadge" hidden></span></button>
         <button data-view="record"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 12l5 5L20 6"/></svg>Record</button>
         <button data-view="research"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="11" cy="11" r="7"/><path d="M20 20l-4-4"/></svg>Research</button>
       </nav>
@@ -2549,6 +2550,7 @@ PAGE = r'''<!doctype html>
 <main>
   <section class="view" id="view-today"></section>
   <section class="view" id="view-slip" hidden></section>
+  <section class="view" id="view-news" hidden></section>
   <section class="view" id="view-record" hidden></section>
   <section class="view" id="view-research" hidden>
     <h2 class="h2">Research a player</h2>
@@ -2749,7 +2751,8 @@ function renderHeader() {
   document.querySelectorAll('#tabs button').forEach(b => b.classList.toggle('on', b.dataset.view === state.view));
   const n = state.slip.map(findPick).filter(Boolean).length;
   $('#slipBadge').hidden = !n; $('#slipBadge').textContent = n;
-  ['today', 'slip', 'record', 'research'].forEach(v => { $('#view-' + v).hidden = state.view !== v; });
+  $('#newsBadge').hidden = !state.alerts.length; $('#newsBadge').textContent = state.alerts.length;
+  ['today', 'slip', 'news', 'record', 'research'].forEach(v => { $('#view-' + v).hidden = state.view !== v; });
 }
 $('#view-record').addEventListener('click', e => {
   const t = e.target.closest('[data-rtab]');
@@ -2851,9 +2854,27 @@ function pickRow(p) {
 async function loadAlerts() {
   try { state.alerts = (await fetch('/api/alerts').then(r => r.json())).alerts || []; render(); } catch (e) {}
 }
+function slipInjuryNotice() {
+  const hit = state.alerts.filter(a => a.in_slip);
+  if (!hit.length) return '';
+  return `<button class="card notice" data-goto="news" style="width:100%;text-align:left;border-color:rgba(240,113,120,.35)">
+    <b class="neg">${hit.length === 1 ? `${esc(hit[0].player)} (in today's picks) was ruled out` : `${hit.length} of today's picks were ruled out`}</b>
+    <span class="muted"> · see News ›</span></button>`;
+}
+function renderNews() {
+  const el = $('#view-news');
+  el.innerHTML = `<h2 class="h2">Injury news</h2>
+    <p class="sub">Notable players ruled out today, and the teammates who've done better without them. Checked about every 15–60 minutes.</p>`
+    + (state.alerts.length ? alertCards()
+      : `<div class="card empty"><strong>No injury news yet today</strong>When a notable player is ruled out for a game today, it shows up here.</div>`);
+}
+$('#view-news').addEventListener('click', e => {
+  const rs = e.target.closest('[data-research]');
+  if (rs) { const r = JSON.parse(rs.dataset.research); openResearch(r.league, r.player, r.prop); }
+});
 function alertCards() {
   if (!state.alerts.length) return '';
-  return `<div class="section-label" style="margin-top:0">Injury news · ${state.alerts.length}</div>` + state.alerts.map(a => {
+  return state.alerts.map(a => {
     const when = new Date(a.time).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
     const rows = (a.teammates || []).map(t => `<div class="alert-row"><div><div class="who">${esc(t.player)} · ${esc(t.prop)}</div>
         <p class="why">${t.without} without him vs ${t.with} with (${t.games_without} games)</p></div>
@@ -2883,7 +2904,7 @@ function renderToday() {
   const el = $('#view-today'), d = state.daily;
   if (state.loading) { el.innerHTML = `<div class="card empty"><span class="spinner"></span>&nbsp; Scanning today's slate…</div>`; return; }
   if (state.dailyError) {
-    el.innerHTML = alertCards() + `<div class="card empty"><strong>${esc(state.dailyErrorTitle || "Scan didn't finish")}</strong>${esc(state.dailyError)}
+    el.innerHTML = slipInjuryNotice() + `<div class="card empty"><strong>${esc(state.dailyErrorTitle || "Scan didn't finish")}</strong>${esc(state.dailyError)}
       ${state.noRetry ? '' : '<div style="margin-top:12px"><button class="btn" data-scan>Try again</button></div>'}</div>`;
     return;
   }
@@ -2904,7 +2925,7 @@ function renderToday() {
   const shown = picks.filter(p => state.filter === 'all' || p.sport === state.filter);
   const extras = [`${d.lines_compared} lines`, `${d.games_scanned} games`, d.books_used ? `${d.books_used} books` : null,
                   d.injured_skipped ? `${d.injured_skipped} injured skipped` : null].filter(Boolean).join(' · ');
-  el.innerHTML = alertCards() + heroCard()
+  el.innerHTML = slipInjuryNotice() + heroCard()
     + (state.lineMsg ? `<div class="card notice">${esc(state.lineMsg)}</div>` : '')
     + `<div style="display:flex;justify-content:space-between;align-items:end;gap:10px;margin-bottom:10px">
          <div><h2 class="h2">Today's picks</h2><div class="faint" style="font-size:12px">${esc(extras)}${d.pp_matched ? '' : ' · confirm lines in the app'}</div></div>
@@ -3546,6 +3567,7 @@ function render() {
   if (state.view === 'today') renderToday();
   if (state.view === 'slip') renderSlipView();
   if (state.view === 'record') renderRecord();
+  if (state.view === 'news') renderNews();
   persist();
 }
 fillLeagues(); render(); loadDaily(false); loadHistory(); loadLive(); loadAlerts();
