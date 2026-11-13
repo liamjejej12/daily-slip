@@ -81,6 +81,7 @@ def page_meta():
         "offense_props": sorted(sa.OFFENSE_MATCHUP_PROPS), "pitcher_positions": sorted(sa.PITCHER_POSITIONS),
         "payouts": sa.PAYOUT_TABLES, "scan_times": sa.SCAN_TIMES,
         "ctx_defaults": sa.CTX_DEFAULTS, "ctx_cap": sa.CTX_CAP,
+        "hist_nudge": sa.HIST_NUDGE, "more_min_p": sa.MORE_MIN_P, "min_books": sa.MIN_BOOKS,
     }
 
 

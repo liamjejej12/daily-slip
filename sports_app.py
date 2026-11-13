@@ -417,11 +417,16 @@ DAILY_FILE          = APP_DIR / "today_best_pick.json"
 DAILY_CREDIT_BUDGET = 15     # hard cap per daily scan (476 credits ≈ a month of scans)
 SLATE_HOURS         = 30     # games starting within this window count as today's slate
 DAILY_PICKS         = 6      # picks shown; the suggested entry uses the best 2 to 6 of them
-MIN_ENTRY_EV        = 0.02   # sit the day out unless the best entry is estimated at +2% or better
-ENTRY_SHRINK        = 0.70   # entry choice trims each estimate 30% toward 50/50 to allow for model error
+MIN_ENTRY_EV        = 0.05   # sit the day out unless the best entry is estimated at +5% or better (Nov 13 review: it was overconfident)
+ENTRY_SHRINK        = 0.50   # entry choice trims each estimate halfway toward 50/50 (Nov 13: slips cashed 13% vs 28% predicted)
 MAX_POWER_LEGS      = 3      # 4- to 6-pick Power pays big but almost never hits; Flex covers those sizes
 BOARD_ANALYZE_CAP   = 60     # lines per scan that get the ESPN check (all are graded later, for learning)
 MAX_PER_GAME        = 2
+# Nov 13 review (439 graded lines): history pushing a pick past the books' odds made it worse,
+# MORE hit 47% vs LESS 56%, and lines priced by only 2-3 books hit 45%.
+HIST_NUDGE          = 0.02   # player history can move the sportsbooks' estimate at most 2 points
+MORE_MIN_P          = 0.53   # a MORE pick needs a stronger estimate than a LESS pick to make the slip
+MIN_BOOKS           = 4      # slip picks need odds from at least this many sportsbooks
 MAX_SCAN_CALLS      = 80     # cap on odds calls per scan (empty markets are free but still take time)
 SCAN_TIMES          = [(11, 0), (15, 0)]   # background scans; 3 PM only runs if 11 AM found too little
 SCHEDULE_LABEL      = "com.prizepicks.dailyscan"
@@ -455,7 +460,7 @@ ODDS_SPORTS = [
     ("americanfootball_nfl",      "NFL",    FOOTBALL_MARKETS),
     ("basketball_ncaab",          "NCAAB",  BASKETBALL_MARKETS),
     ("americanfootball_ncaaf",    "NCAAF",  FOOTBALL_MARKETS),
-    ("icehockey_nhl",             "NHL",    [("player_shots_on_goal", "Shots on Goal"), ("player_points", "Points")]),
+    # NHL dropped Nov 13: 46% over 102 lines (expected 53%); its credits now go to the other sports
     ("soccer_epl",                "EPL",    SOCCER_MARKETS),
     ("soccer_spain_la_liga",      "LALIGA", SOCCER_MARKETS),
     ("soccer_uefa_champs_league", "UCL",    SOCCER_MARKETS),
@@ -648,8 +653,7 @@ def entry_ev(probs, kind):
 def best_entry(picks):
     """Highest-EV entry from the top 2 to 6 picks; sit out when nothing clears MIN_ENTRY_EV."""
     shrink = entry_shrink()
-    # 6 legs magnifies any overconfidence; allow it only once entry sizing has been learned from results
-    max_legs = 6 if (load_model().get("entry") or {}).get("active") else 5
+    max_legs = 5                                # 6 legs magnifies any overconfidence (Nov 13 review)
     best = None
     for n in range(2, min(len(picks), max_legs) + 1):
         legs = picks[:n]
@@ -973,6 +977,8 @@ def scan_daily():
     for c in candidates:
         if c["final_p"] < 0.5:
             break                      # never fill the slip with a pick it expects to lose
+        if not slip_ok(c):
+            continue                   # MORE without a strong edge, or too few books pricing it
         if c["injury"]:
             continue                   # listed on the injury report: skip
         if is_cold(c, cold):
@@ -1177,7 +1183,17 @@ def segment_keys(c):
 
 
 def base_prob(c, w):
-    return w * c["market_p"] + (1 - w) * c["hist_p"] if c.get("hist_p") is not None else c["market_p"]
+    if c.get("hist_p") is None:
+        return c["market_p"]
+    nudge = (1 - w) * (c["hist_p"] - c["market_p"])
+    return c["market_p"] + max(-HIST_NUDGE, min(HIST_NUDGE, nudge))
+
+
+def slip_ok(c):
+    """Extra bar a line must clear to make the daily slip (all lines are still graded for learning)."""
+    if c["final_p"] < 0.5 or (c["side"] == "MORE" and c["final_p"] < MORE_MIN_P):
+        return False
+    return (c.get("n_books") or 0) >= MIN_BOOKS
 
 
 def apply_model(c, model):
@@ -1193,9 +1209,9 @@ def clamp(x):
     return max(-MAX_ADJ, min(MAX_ADJ, x))
 
 
-ENTRY_PRIOR_DAYS  = 30    # days of results the default entry caution is worth
+ENTRY_PRIOR_DAYS  = 15    # days of results the default entry caution is worth
 ENTRY_MIN_DAYS    = 10    # graded days before entry caution is adjusted
-ENTRY_RANGE       = (0.5, 0.9)   # never trim estimates less than 10% or more than 50%
+ENTRY_RANGE       = (0.25, 0.9)  # never trim estimates less than 10% or more than 75%
 SAME_GAME_MIN     = 40    # same-game pick pairs before the per-game limit can change
 
 
@@ -1243,7 +1259,7 @@ def learn_entries(h):
         return sum((cash_prob([0.5 + (q - 0.5) * shrink for q in probs], kind) - cashed) ** 2
                    for probs, kind, cashed in sims) / n
 
-    fit = min((x / 100 for x in range(40, 101, 5)), key=brier) if n >= 10 else ENTRY_SHRINK
+    fit = min((x / 100 for x in range(10, 101, 5)), key=brier) if n >= 10 else ENTRY_SHRINK
     # a day's replayed slips share the same picks, so evidence is counted in days, not slips
     shrink = (days * fit + ENTRY_PRIOR_DAYS * ENTRY_SHRINK) / (days + ENTRY_PRIOR_DAYS)
     shrink = min(max(shrink, ENTRY_RANGE[0]), ENTRY_RANGE[1])
@@ -1595,7 +1611,7 @@ def rebuild_picks(d, reports=None):
     reports = reports or {}
     existing = {(p["sport"], p["player"], p["prop"]): p for p in d.get("picks", [])}
     cold = cold_areas()
-    pool = sorted((b for b in d["board"] if not b.get("injury") and not b.get("pulled") and b["final_p"] >= 0.5
+    pool = sorted((b for b in d["board"] if not b.get("injury") and not b.get("pulled") and slip_ok(b)
                    and not is_cold(b, cold)), key=lambda b: -b["final_p"])
     picks, players, per_game, game_cap = [], set(), {}, max_per_game()
     for b in pool:
@@ -1729,7 +1745,7 @@ def uninstall_server():
 
 # ───────── Injury news watcher (ESPN, free) ─────────
 ALERTS_FILE      = APP_DIR / "alerts.json"
-INJURY_LEAGUES   = ["NBA", "WNBA", "NFL", "NHL"]       # leagues ESPN publishes injury reports for
+INJURY_LEAGUES   = ["NBA", "WNBA", "NFL"]       # leagues ESPN publishes injury reports for (NHL is no longer scanned)
 OUT_STATUSES     = {"out", "doubtful"}
 # A ruled-out player matters if he averages at least one of these this season
 NOTABLE          = {"basketball": [("points", 12)], "hockey": [("points", 0.6), ("shotsTotal", 2.5)],

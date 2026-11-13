@@ -466,7 +466,8 @@
   function applyModel(c, model) {
     model = model || { market_weight: META.market_weight, active: false };
     const w = model.market_weight;
-    let p = c.hist_p != null ? w * c.market_p + (1 - w) * c.hist_p : c.market_p;
+    // player history nudges the sportsbooks' estimate by at most META.hist_nudge (as in sports_app.py)
+    let p = c.hist_p != null ? c.market_p + Math.max(-META.hist_nudge, Math.min(META.hist_nudge, (1 - w) * (c.hist_p - c.market_p))) : c.market_p;
     if (model.active) {
       const adj = (model.bias || 0) + segmentKeys(c).reduce((t, k) => t + ((model.segments || {})[k] || 0), 0);
       p += Math.max(-META.max_total_adj, Math.min(META.max_total_adj, adj));
@@ -494,7 +495,7 @@
   function bestEntry(picks) {
     let best = null;
     const shrink = entryShrink();
-    const maxLegs = (learned().entry || {}).active ? 6 : 5;     // as in sports_app.py
+    const maxLegs = 5;     // as in sports_app.py
     for (let n = 2; n <= Math.min(picks.length, maxLegs); n++) {
       const legs = picks.slice(0, n);
       const teams = new Set(legs.map(p => ((p.report || {}).player || {}).team || p.game + p.player));
@@ -514,7 +515,8 @@
     const existing = {};
     for (const p of d.picks || []) existing[`${p.sport}|${p.player}|${p.prop}`] = p;
     const cold = new Set(((data.view || {}).areas || []).filter(a => a.cold).map(a => a.key));
-    const pool = d.board.filter(b => !b.injury && !b.pulled && b.final_p >= 0.5
+    const slipOk = b => b.final_p >= 0.5 && !(b.side === 'MORE' && b.final_p < META.more_min_p) && (b.n_books || 0) >= META.min_books;
+    const pool = d.board.filter(b => !b.injury && !b.pulled && slipOk(b)
         && !cold.has(`${b.sport}|${b.prop}|${b.side}`) && !cold.has(`${b.sport}|${b.prop}|*`))
       .sort((a, b) => b.final_p - a.final_p);
     const picks = [], players = new Set(), perGame = {}, cap = maxPerGame();
